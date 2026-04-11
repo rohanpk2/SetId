@@ -13,6 +13,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, radii, shadows } from '../theme';
 import { useAuth } from '../contexts/AuthContext';
+import { BASE_URL } from '../services/api';
 
 export default function LoginScreen({ navigation }) {
   const insets = useSafeAreaInsets();
@@ -24,15 +25,31 @@ export default function LoginScreen({ navigation }) {
   const [loading, setLoading] = useState(false);
 
   const handleLogin = async () => {
+    if (__DEV__) {
+      console.log('[SPLTR] Login button pressed', { platform: Platform.OS });
+    }
     if (!email.trim() || !password) {
       setError('Please fill in all fields');
       return;
+    }
+    if (__DEV__) {
+      const loginPath = '/auth/login';
+      console.log('[SPLTR] API_BASE_URL:', BASE_URL);
+      console.log('[SPLTR] FULL LOGIN URL:', `${BASE_URL}${loginPath}`);
     }
     setError('');
     setLoading(true);
     try {
       await login(email.trim().toLowerCase(), password);
     } catch (err) {
+      if (__DEV__) {
+        console.warn('[SPLTR] Login failed (app error shape)', {
+          message: err?.error?.message,
+          code: err?.error?.code,
+          status: err?.status,
+          raw: err,
+        });
+      }
       setError(err?.error?.message ?? 'Invalid email or password');
     } finally {
       setLoading(false);

@@ -92,6 +92,8 @@ export default function ScanReceiptScreen({ navigation, route }) {
   const [parsedData, setParsedData] = useState(null);
 
   const pickAndUpload = async (useCamera) => {
+    let cleanupStatusTimer;
+
     try {
       const options = {
         mediaTypes: ['images'],
@@ -127,9 +129,13 @@ export default function ScanReceiptScreen({ navigation, route }) {
       setUploading(false);
 
       setParsing(true);
-      setStatusText('Parsing receipt…');
+      setStatusText('Extracting text…');
+      cleanupStatusTimer = setTimeout(() => {
+        setStatusText('Cleaning receipt…');
+      }, 900);
 
       const parseRes = await receipts.parse(billId);
+      clearTimeout(cleanupStatusTimer);
       setParsedData(parseRes.data);
       setParsing(false);
       setStatusText('Receipt parsed!');
@@ -138,6 +144,7 @@ export default function ScanReceiptScreen({ navigation, route }) {
         navigation.navigate('BillSplit', { billId, refresh: Date.now() });
       }, 800);
     } catch (err) {
+      if (cleanupStatusTimer) clearTimeout(cleanupStatusTimer);
       setUploading(false);
       setParsing(false);
       setStatusText('Position receipt in frame');

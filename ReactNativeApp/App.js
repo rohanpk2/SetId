@@ -25,7 +25,6 @@ import BillSplitScreen from './src/screens/BillSplitScreen';
 import ReviewPaymentScreen from './src/screens/ReviewPaymentScreen';
 import ActivityDetailScreen from './src/screens/ActivityDetailScreen';
 import ScanReceiptScreen from './src/screens/ScanReceiptScreen';
-import CreateBillScreen from './src/screens/CreateBillScreen';
 import FundsCollectedScreen from './src/screens/FundsCollectedScreen';
 import NotificationsScreen from './src/screens/NotificationsScreen';
 import MainTabNavigator from './src/navigation/MainTabNavigator';
@@ -64,11 +63,6 @@ function MainNavigator() {
         name="ActivityDetail"
         component={ActivityDetailScreen}
         options={{ animation: 'slide_from_right' }}
-      />
-      <MainStack.Screen
-        name="CreateBill"
-        component={CreateBillScreen}
-        options={{ animation: 'slide_from_bottom' }}
       />
       <MainStack.Screen
         name="ScanReceipt"

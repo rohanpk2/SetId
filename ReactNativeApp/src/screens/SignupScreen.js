@@ -14,6 +14,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, radii, shadows } from '../theme';
 import { useAuth } from '../contexts/AuthContext';
+import { BASE_URL } from '../services/api';
 
 export default function SignupScreen({ navigation }) {
   const insets = useSafeAreaInsets();
@@ -26,6 +27,9 @@ export default function SignupScreen({ navigation }) {
   const [loading, setLoading] = useState(false);
 
   const handleSignup = async () => {
+    if (__DEV__) {
+      console.log('[SPLTR] Sign up button pressed', { platform: Platform.OS });
+    }
     if (!fullName.trim() || !email.trim() || !password) {
       setError('Please fill in all fields');
       return;
@@ -34,11 +38,24 @@ export default function SignupScreen({ navigation }) {
       setError('Password must be at least 8 characters');
       return;
     }
+    if (__DEV__) {
+      const signupPath = '/auth/signup';
+      console.log('[SPLTR] API_BASE_URL:', BASE_URL);
+      console.log('[SPLTR] FULL SIGNUP URL:', `${BASE_URL}${signupPath}`);
+    }
     setError('');
     setLoading(true);
     try {
       await signup(email.trim().toLowerCase(), password, fullName.trim());
     } catch (err) {
+      if (__DEV__) {
+        console.warn('[SPLTR] Signup failed (app error shape)', {
+          message: err?.error?.message,
+          code: err?.error?.code,
+          status: err?.status,
+          raw: err,
+        });
+      }
       setError(err?.error?.message ?? 'Could not create account');
     } finally {
       setLoading(false);

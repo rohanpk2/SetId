@@ -2,11 +2,37 @@ import axios from 'axios';
 import { Platform } from 'react-native';
 import { getToken, removeToken } from './auth';
 
-// Android emulator uses 10.0.2.2 to reach host localhost
-const DEV_BASE =
-  Platform.OS === 'android' ? 'http://10.0.2.2:8000' : 'http://localhost:8000';
+// Dev API host for local simulator development on the same machine as the backend.
+const DEV_BASE = 'http://localhost:8000';
 
-const BASE_URL = __DEV__ ? DEV_BASE : 'https://api.spltr.app'; // TODO: replace with prod URL
+/** Dev/prod API origin — exported for debug logs (LoginScreen, etc.). */
+export const BASE_URL = __DEV__ ? DEV_BASE : 'https://api.spltr.app'; // TODO: replace with prod URL
+
+function logAxiosFailure(error) {
+  if (!__DEV__) return;
+  const cfg = error.config;
+  const base = cfg?.baseURL ?? '';
+  const path = cfg?.url ?? '';
+  const fullUrl = `${base}${path}` || '(unknown URL)';
+  const hints = [];
+  if (error.code === 'ECONNREFUSED' || error.message === 'Network Error') {
+    hints.push('Check uvicorn is running (venv + port 8000).');
+  }
+  if (Platform.OS !== 'android' && base.includes('localhost')) {
+    hints.push('On a physical device, localhost is the phone — use your Mac/PC LAN IP as BASE_URL.');
+  }
+  if (Platform.OS === 'android' && base.includes('10.0.2.2')) {
+    hints.push('Android emulator: 10.0.2.2 maps to host localhost.');
+  }
+  console.warn('[SPLTR API] request failed', {
+    message: error.message,
+    code: error.code,
+    method: cfg?.method?.toUpperCase(),
+    fullUrl,
+    status: error.response?.status,
+    hints,
+  });
+}
 
 const client = axios.create({
   baseURL: BASE_URL,
@@ -27,6 +53,7 @@ client.interceptors.request.use(async (config) => {
 client.interceptors.response.use(
   (response) => response.data,
   async (error) => {
+    logAxiosFailure(error);
     if (error.response?.status === 401) {
       await removeToken();
     }

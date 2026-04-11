@@ -9,6 +9,7 @@ import {
   Platform,
   ActivityIndicator,
   RefreshControl,
+  Alert,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -17,7 +18,9 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
 import { colors, radii, shadows } from '../theme';
 import { useAuth } from '../contexts/AuthContext';
-import { dashboard as dashboardApi, notifications as notificationsApi } from '../services/api';
+import { bills, dashboard as dashboardApi, notifications as notificationsApi } from '../services/api';
+
+const DRAFT_BILL_TITLE = 'Untitled Bill';
 
 const ACTIVITY_TYPE_META = {
   bill_created: { icon: 'receipt-long', positive: true },
@@ -319,20 +322,25 @@ function RecentActivitySection({ activities, onItemPress }) {
   );
 }
 
-function FloatingActionButton({ tabBarHeight, onPress }) {
+function FloatingActionButton({ tabBarHeight, onPress, loading }) {
   return (
     <TouchableOpacity
       activeOpacity={0.85}
       onPress={onPress}
+      disabled={loading}
       style={[styles.fab, shadows.fab, { bottom: tabBarHeight + 16 }]}
     >
       <LinearGradient
         colors={[colors.secondary, colors.secondaryDim]}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
-        style={styles.fabGradient}
+        style={[styles.fabGradient, loading && styles.fabGradientDisabled]}
       >
-        <MaterialIcons name="add" size={28} color={colors.onSecondary} />
+        {loading ? (
+          <ActivityIndicator color={colors.onSecondary} />
+        ) : (
+          <MaterialIcons name="add" size={28} color={colors.onSecondary} />
+        )}
       </LinearGradient>
     </TouchableOpacity>
   );
@@ -351,6 +359,7 @@ export default function DashboardScreen({ navigation }) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [creatingBill, setCreatingBill] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -396,6 +405,26 @@ export default function DashboardScreen({ navigation }) {
     navigation.navigate('BillSplit', { billId: bill.id });
   };
 
+  const handleCreateBillFromReceipt = useCallback(async () => {
+    if (creatingBill) return;
+
+    setCreatingBill(true);
+    try {
+      const res = await bills.create({ title: DRAFT_BILL_TITLE });
+      const billId = res?.data?.id;
+
+      if (!billId) {
+        throw new Error('Missing bill ID');
+      }
+
+      navigation.navigate('ScanReceipt', { billId });
+    } catch (err) {
+      Alert.alert('Could not start bill', err?.error?.message ?? 'Please try again.');
+    } finally {
+      setCreatingBill(false);
+    }
+  }, [creatingBill, navigation]);
+
   if (loading) {
     return (
       <View style={[styles.root, styles.centered]}>
@@ -440,7 +469,8 @@ export default function DashboardScreen({ navigation }) {
 
       <FloatingActionButton
         tabBarHeight={tabBarHeight}
-        onPress={() => navigation.navigate('CreateBill')}
+        loading={creatingBill}
+        onPress={handleCreateBillFromReceipt}
       />
     </View>
   );
@@ -850,5 +880,8 @@ const styles = StyleSheet.create({
     borderRadius: 30,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  fabGradientDisabled: {
+    opacity: 0.82,
   },
 });
