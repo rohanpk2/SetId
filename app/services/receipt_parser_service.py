@@ -258,17 +258,116 @@ class ReceiptParserService:
             .all()
         )
 
+    def sync_items(self, bill_id: str, data: dict) -> dict:
+        bill = self.db.query(Bill).filter(Bill.id == bill_id).first()
+        if not bill:
+            raise ValueError(f"Bill {bill_id} not found")
+
+        receipt = self.get_receipt(bill_id)
+        if not receipt:
+            raise ValueError(f"No receipt found for bill {bill_id}")
+
+        existing_items = self.get_items(bill_id)
+        item_map = {str(item.id): item for item in existing_items}
+        delete_ids = {str(item_id) for item_id in data.get("deletes", [])}
+        delete_item_uuids = [item.id for item in existing_items if str(item.id) in delete_ids]
+
+        if delete_item_uuids:
+            self.db.execute(
+                delete(ItemAssignment).where(ItemAssignment.receipt_item_id.in_(delete_item_uuids))
+            )
+            self.db.execute(delete(ReceiptItem).where(ReceiptItem.id.in_(delete_item_uuids)))
+
+        updated_items: list[ReceiptItem] = []
+        for raw_update in data.get("updates", []):
+            item_id = str(raw_update["id"])
+            if item_id in delete_ids:
+                continue
+
+            item = item_map.get(item_id)
+            if not item:
+                raise ValueError(f"ReceiptItem {item_id} not found")
+
+            normalized = self._normalize_edit_item(
+                name=raw_update["name"],
+                quantity=raw_update["quantity"],
+                total_price=raw_update["total_price"],
+            )
+            self._apply_item_values(item, normalized)
+            updated_items.append(item)
+
+        created_items: list[ReceiptItem] = []
+        for raw_create in data.get("creates", []):
+            normalized = self._normalize_edit_item(
+                name=raw_create["name"],
+                quantity=raw_create["quantity"],
+                total_price=raw_create["total_price"],
+            )
+            item = ReceiptItem(
+                receipt_id=receipt.id,
+                bill_id=bill_id,
+                name=normalized["name"],
+                quantity=normalized["quantity"],
+                unit_price=normalized["unit_price"],
+                total_price=normalized["total_price"],
+                category=None,
+                confidence=None,
+                is_taxable=True,
+                sort_order=0,
+            )
+            self.db.add(item)
+            created_items.append(item)
+
+        remaining_existing_items = [
+            item for item in existing_items
+            if str(item.id) not in delete_ids
+        ]
+        ordered_existing_items = sorted(remaining_existing_items, key=lambda item: item.sort_order)
+        for index, item in enumerate([*created_items, *ordered_existing_items]):
+            item.sort_order = index
+
+        for item in updated_items:
+            self._recalculate_assignments_for_item(item)
+
+        self._recalculate_bill_totals(bill)
+        self.db.commit()
+        self.db.refresh(bill)
+
+        return {
+            "bill": bill,
+            "items": self.get_items(bill_id),
+        }
+
     def update_item(self, item_id: str, data: dict) -> ReceiptItem:
         item = self.db.query(ReceiptItem).filter(ReceiptItem.id == item_id).first()
         if not item:
             raise ValueError(f"ReceiptItem {item_id} not found")
 
-        for key, value in data.items():
-            if hasattr(item, key):
-                setattr(item, key, value)
+        total_price = data.get("total_price")
+        if total_price is None and "unit_price" in data:
+            unit_price = _coerce_decimal(data["unit_price"])
+            quantity = data.get("quantity", item.quantity)
+            if unit_price is None:
+                raise ValueError("Receipt item unit price must be greater than zero")
+            total_price = unit_price * Decimal(str(quantity))
+        if total_price is None:
+            total_price = item.total_price
 
-        if "unit_price" in data or "quantity" in data:
-            item.total_price = item.unit_price * item.quantity
+        normalized = self._normalize_edit_item(
+            name=data.get("name", item.name),
+            quantity=data.get("quantity", item.quantity),
+            total_price=total_price,
+        )
+        self._apply_item_values(item, normalized)
+
+        for field in ("category", "is_taxable"):
+            if field in data:
+                setattr(item, field, data[field])
+
+        self._recalculate_assignments_for_item(item)
+        bill = self.db.query(Bill).filter(Bill.id == item.bill_id).first()
+        if bill:
+            self._recalculate_bill_totals(bill)
 
         self.db.commit()
         self.db.refresh(item)
@@ -479,3 +578,88 @@ class ReceiptParserService:
         if ADDRESS_PATTERN.search(lowered) and any(char.isdigit() for char in lowered):
             return True
         return any(pattern.search(lowered) for pattern in NON_ITEM_PATTERNS)
+
+    def _normalize_edit_item(
+        self,
+        *,
+        name: object,
+        quantity: object,
+        total_price: object,
+    ) -> dict:
+        cleaned_name = " ".join(str(name or "").split()).strip()
+        if not cleaned_name:
+            raise ValueError("Receipt items must have a name")
+
+        try:
+            normalized_quantity = int(str(quantity).strip())
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Receipt items must have a valid quantity") from exc
+        if normalized_quantity <= 0:
+            raise ValueError("Receipt items must have quantity greater than zero")
+
+        normalized_total = _coerce_decimal(total_price)
+        if normalized_total is None or normalized_total <= 0:
+            raise ValueError("Receipt items must have price greater than zero")
+
+        unit_price = (
+            (normalized_total / normalized_quantity).quantize(MONEY_QUANTIZE, rounding=ROUND_HALF_UP)
+            if normalized_quantity > 1
+            else normalized_total
+        )
+
+        return {
+            "name": cleaned_name,
+            "quantity": normalized_quantity,
+            "total_price": normalized_total,
+            "unit_price": unit_price,
+        }
+
+    def _apply_item_values(self, item: ReceiptItem, data: dict) -> None:
+        item.name = data["name"]
+        item.quantity = data["quantity"]
+        item.total_price = data["total_price"]
+        item.unit_price = data["unit_price"]
+
+    def _recalculate_bill_totals(self, bill: Bill) -> None:
+        subtotal = sum(
+            (
+                item.total_price
+                for item in self.db.query(ReceiptItem).filter(ReceiptItem.bill_id == bill.id).all()
+            ),
+            Decimal("0.00"),
+        ).quantize(MONEY_QUANTIZE)
+        bill.subtotal = subtotal
+        bill.total = (
+            subtotal
+            + (bill.tax or Decimal("0.00"))
+            + (bill.tip or Decimal("0.00"))
+            + (bill.service_fee or Decimal("0.00"))
+        ).quantize(MONEY_QUANTIZE)
+
+    def _recalculate_assignments_for_item(self, item: ReceiptItem) -> None:
+        assignments = (
+            self.db.query(ItemAssignment)
+            .filter(ItemAssignment.receipt_item_id == item.id)
+            .all()
+        )
+        if not assignments:
+            return
+
+        equal_count = len(assignments)
+        for assignment in assignments:
+            if assignment.share_type == "equal":
+                if equal_count <= 0:
+                    assignment.amount_owed = Decimal("0.00")
+                else:
+                    assignment.amount_owed = (
+                        item.total_price / equal_count
+                    ).quantize(MONEY_QUANTIZE, rounding=ROUND_HALF_UP)
+            elif assignment.share_type == "percentage":
+                assignment.amount_owed = (
+                    item.total_price * assignment.share_value / Decimal("100")
+                ).quantize(MONEY_QUANTIZE, rounding=ROUND_HALF_UP)
+            elif assignment.share_type == "fixed":
+                assignment.amount_owed = assignment.share_value.quantize(
+                    MONEY_QUANTIZE,
+                    rounding=ROUND_HALF_UP,
+                )
