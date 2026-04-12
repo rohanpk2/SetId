@@ -30,6 +30,11 @@ def _twilio_configured() -> bool:
     )
 
 
+def otp_uses_dev_store() -> bool:
+    """True when OTP is not sent via SMS (in-memory code + server log only)."""
+    return not _twilio_configured() and settings.OTP_DEV_MODE
+
+
 def send_otp(phone_e164: str) -> None:
     """Send OTP via Twilio Verify or dev store."""
     if _twilio_configured():

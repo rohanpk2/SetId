@@ -16,7 +16,11 @@ from app.schemas.auth import (
     PhoneAuthData,
 )
 from app.services.auth_service import AuthService
-from app.services.otp_service import OtpProviderError, send_otp as send_sms_otp
+from app.services.otp_service import (
+    OtpProviderError,
+    otp_uses_dev_store,
+    send_otp as send_sms_otp,
+)
 from app.limiter import limiter
 from app.utils.phone import normalize_to_e164
 from app.utils.phone_rate_limit import check_phone_send_limit
@@ -92,7 +96,10 @@ def send_otp(request: Request, body: SendOtpRequest):
     except OtpProviderError as e:
         status = 503 if e.code == "CONFIG_ERROR" else 502
         return error_response(e.code, e.message, status)
-    return success_response(data={"sent": True}, message="Verification code sent")
+    return success_response(
+        data={"sent": True, "otp_dev_mode": otp_uses_dev_store()},
+        message="Verification code sent",
+    )
 
 
 @router.post("/verify-otp")
