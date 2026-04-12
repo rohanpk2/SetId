@@ -14,6 +14,105 @@ import {
 import { MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { colors, radii, shadows, spacing } from '../theme';
+import { useAuth } from '../contexts/AuthContext';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+
+const AVATAR_URLS = [
+  'https://lh3.googleusercontent.com/aida-public/AB6AXuBYLmd0VIxB-yqNOZYE5J3nfTBJIL1xOlT3bLhEdzz0uby2GUFny-G8x29r0TsDvXwy10TMWDXr7grX3d85sC_S8II-uDRsLMcIIk_WmLmVTbEXMDtxHN8BHbabhhQ_u98KZnw_5-RvBi8s55yuXvTFdisZPFXaajqT5j-bPssoTWz9T9yAg0fgRSeorXDlFyk_94RD-T34hVuI3Rewgjvtdlg47Zr_rHZdwzU4ycMmcVZ_wH2AW-lp6KjQ7gvdtvTGECMvx_uF',
+  'https://lh3.googleusercontent.com/aida-public/AB6AXuALBynKcZ2zAfZXmMosryjI7bKzm63L8-uh56nHFFxgoXd-wnYJ8Idxwl-5ZQOWVOzL3EexU-zhaicDw46fAhASygOJkX7xZ9UjMkrpogho90ozA2CXLcPIOmpZZ0ade_4wCijdSmiGKFHM_KjH6nsH77hfb1bLYCkkXY4oEFb1hRvVKnAL5GzZp_zFDU_ZM13MPCtHUeIbZUdcK1orNyenx5ifv2mx-Jf1i2duODq_oiMM64OfiU-BcUP1_LGVl1veeaLoCQU-',
+  'https://lh3.googleusercontent.com/aida-public/AB6AXuA_41JOXkyhaJ_Xn8N-qlkwfZCg5XHHS6JC5M2WdblKrNGkIrpNopGts-xy0JDGGjYp0p8mHb-NgeuUWBYdAffVFFvMfKGymTT0r3AUxIpVu5OCRl-B_mR9N-GXDQsyY7GcGUnGvuWYf2300syGHnrebLhOn1LnJfqxBl4dsOTEslYuSrpCSNpcpy_TvKLy5DQI2Niy15HWTAWd2MPoU5lvQOEL2U9ZYSSZLlQdPXyiJ1marpgHthRfyEZILOdAhig6LCZZ93x5',
+];
+
+const PROFILE_URL =
+  'https://lh3.googleusercontent.com/aida-public/AB6AXuBPVqPqKe3UPsOPFyxVrVrEcM8dkxixaNRZHHMFRfgXtVAmDdLs8FKfSTdj5xKA5GfDQ3_8tIJHy05RnXx6t-Dk_yX6tOjX3BqyXo7u4CS-90rOFCGYzf4ONoJzf9E8mx0UBKYRCS9h-3IXlCngwsCGsauul2KyGDq7cf10JPI5tSHJ3shFQrFyQZBg4ryv0nuz74NhX0fUIGAm1ZTOos3LJgxHJpK7-AjDC90-UjvzUCeBav5Y-OuDkhDJmSEQKbytfn3YEnA8';
+
+const BILLS = [
+  {
+    id: '1',
+    title: 'Starbucks Mornings',
+    subtitle: 'Ongoing \u2022 3 members',
+    amount: '$42.50',
+    icon: 'local-cafe',
+    iconColor: colors.secondary,
+  },
+  {
+    id: '2',
+    title: 'Weekly Groceries',
+    subtitle: 'Shared with Sarah',
+    amount: '$128.15',
+    icon: 'shopping-bag',
+    iconColor: colors.primary,
+  },
+];
+
+const ACTIVITY = [
+  {
+    id: '1',
+    title: 'Sushi Corner',
+    date: 'Yesterday, 8:30 PM',
+    amount: '+$12.50',
+    status: 'Settled',
+    icon: 'restaurant-menu',
+    positive: true,
+  },
+  {
+    id: '2',
+    title: 'Blue Bottle Caf\u00e9',
+    date: 'Aug 24, 10:15 AM',
+    amount: '-$8.40',
+    status: 'Pending',
+    icon: 'local-cafe',
+    positive: false,
+  },
+  {
+    id: '3',
+    title: 'Cineplex Cinema',
+    date: 'Aug 22, 11:00 PM',
+    amount: '+$45.00',
+    status: 'Settled',
+    icon: 'movie',
+    positive: true,
+  },
+];
+
+const NAV_ITEMS = [
+  { key: 'dashboard', label: 'Dashboard', icon: 'dashboard', active: true },
+  { key: 'activity', label: 'Activity', icon: 'receipt-long', active: false },
+  { key: 'profile', label: 'Profile', icon: 'person', active: false },
+];
+
+/** Keeps header compact so action icons stay on-screen (E.164 is very long). */
+function compactDisplayName(raw) {
+  if (!raw) return 'Member';
+  if (typeof raw === 'string' && raw.startsWith('+')) {
+    const digits = raw.replace(/\D/g, '');
+    if (digits.length >= 4) {
+      return `•••• ${digits.slice(-4)}`;
+    }
+  }
+  if (raw.length > 22) {
+    return `${raw.slice(0, 20)}…`;
+  }
+  return raw;
+}
+
+function TopAppBar({ insets }) {
+  const { user, logout } = useAuth();
+  const displayName =
+    user?.full_name && user.full_name !== 'Member'
+      ? compactDisplayName(user.full_name)
+      : user?.phone
+        ? compactDisplayName(user.phone)
+        : 'Member';
+
+  const onLogout = () => {
+    Alert.alert('Log out', 'Sign out of WealthSplit on this device?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Log out', style: 'destructive', onPress: () => logout() },
+    ]);
+  };
 import { useFocusEffect } from '@react-navigation/native';
 import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
 import { colors, radii, shadows } from '../theme';
@@ -75,8 +174,26 @@ function TopAppBar({ insets, user, onNotificationsPress, unreadCount }) {
               </View>
             )}
           </View>
-          <View>
+          <View style={styles.profileTextCol}>
             <Text style={styles.welcomeLabel}>Welcome back,</Text>
+            <Text style={styles.userName} numberOfLines={1} ellipsizeMode="tail">
+              {displayName}
+            </Text>
+          </View>
+        </View>
+        <View style={styles.topBarActions}>
+          <TouchableOpacity style={styles.iconButton} activeOpacity={0.7}>
+            <MaterialIcons name="notifications-none" size={24} color={colors.onSurface} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.iconButton}
+            activeOpacity={0.7}
+            onPress={onLogout}
+            accessibilityLabel="Log out"
+          >
+            <MaterialIcons name="logout" size={22} color={colors.onSurfaceVariant} />
+          </TouchableOpacity>
+        </View>
             <Text style={styles.userName}>{user?.full_name || 'User'}</Text>
           </View>
         </View>
@@ -507,10 +624,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingBottom: 12,
   },
+  topBarActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexShrink: 0,
+  },
   profileRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+    flex: 1,
+    minWidth: 0,
+    marginRight: 8,
+  },
+  profileTextCol: {
+    flex: 1,
+    minWidth: 0,
   },
   avatarContainer: {
     width: 40,
