@@ -1,6 +1,8 @@
 import uuid
 from datetime import datetime
 
+from typing import Literal
+
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
@@ -28,19 +30,32 @@ class UserBrief(BaseModel):
 
 class SendOtpRequest(BaseModel):
     phone: str = Field(min_length=8, max_length=32)
+    # signup = new account only; login = existing phone only. Omit for legacy clients (flexible).
+    intent: Literal["signup", "login"] | None = None
 
 
 class VerifyOtpRequest(BaseModel):
     phone: str = Field(min_length=8, max_length=32)
     code: str = Field(min_length=4, max_length=10)
-    first_name: str = Field(min_length=1, max_length=100)
+    # Empty allowed for returning-user phone login; signup sends a non-empty name.
+    first_name: str = Field(default="", max_length=100)
+    intent: Literal["signup", "login"] | None = None
+
+    @field_validator("code", mode="before")
+    @classmethod
+    def coerce_code_str(cls, v: object) -> str:
+        if v is None:
+            return ""
+        return str(v).strip()
 
     @field_validator("first_name", mode="before")
     @classmethod
-    def strip_first_name(cls, v: str) -> str:
+    def strip_first_name(cls, v: object) -> str:
+        if v is None:
+            return ""
         if isinstance(v, str):
             return v.strip()
-        return v
+        return str(v).strip()
 
 
 class PhoneAuthData(BaseModel):

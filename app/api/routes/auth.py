@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
@@ -26,6 +28,7 @@ from app.utils.phone import normalize_to_e164
 from app.utils.phone_rate_limit import check_phone_send_limit
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/signup")
@@ -77,11 +80,15 @@ def logout(current_user: User = Depends(get_current_user)):
 
 @router.post("/send-otp")
 @limiter.limit("20/minute")
-def send_otp(request: Request, body: SendOtpRequest):
+def send_otp(request: Request, body: SendOtpRequest, db: Session = Depends(get_db)):
     """Send SMS OTP via Twilio Verify (or dev in-memory when configured)."""
     try:
         phone_e164 = normalize_to_e164(body.phone)
     except ValueError:
+        logger.warning(
+            "auth.send_otp invalid_phone ip=%s",
+            request.client.host if request.client else None,
+        )
         return error_response(
             "INVALID_PHONE",
             "Enter a valid phone number in international format.",
@@ -90,12 +97,47 @@ def send_otp(request: Request, body: SendOtpRequest):
     try:
         check_phone_send_limit(phone_e164)
     except PermissionError as e:
+        logger.warning(
+            "auth.send_otp rate_limited phone_tail=%s ip=%s",
+            phone_e164[-4:],
+            request.client.host if request.client else None,
+        )
         return error_response("RATE_LIMIT_EXCEEDED", str(e), 429)
+    svc = AuthService(db)
+    try:
+        svc.assert_send_otp_intent(phone_e164, body.intent)
+    except ValueError as e:
+        err = e.args[0] if e.args else "ERROR"
+        if err == "PHONE_ALREADY_REGISTERED":
+            return error_response(
+                "PHONE_ALREADY_REGISTERED",
+                "This number already has an account. Log in instead.",
+                409,
+            )
+        if err == "PHONE_NOT_REGISTERED":
+            return error_response(
+                "PHONE_NOT_REGISTERED",
+                "No account for this number yet. Use Get Started to sign up.",
+                404,
+            )
+        return error_response("ERROR", str(e), 400)
     try:
         send_sms_otp(phone_e164)
     except OtpProviderError as e:
+        logger.warning(
+            "auth.send_otp failed code=%s phone_tail=%s ip=%s",
+            e.code,
+            phone_e164[-4:],
+            request.client.host if request.client else None,
+        )
         status = 503 if e.code == "CONFIG_ERROR" else 502
         return error_response(e.code, e.message, status)
+    logger.info(
+        "auth.send_otp ok phone_tail=%s dev_mode=%s ip=%s",
+        phone_e164[-4:],
+        otp_uses_dev_store(),
+        request.client.host if request.client else None,
+    )
     return success_response(
         data={"sent": True, "otp_dev_mode": otp_uses_dev_store()},
         message="Verification code sent",
@@ -105,26 +147,61 @@ def send_otp(request: Request, body: SendOtpRequest):
 @router.post("/verify-otp")
 @limiter.limit("40/minute")
 def verify_otp_phone(request: Request, body: VerifyOtpRequest, db: Session = Depends(get_db)):
-    """Verify OTP and return JWT + user (creates user on first success)."""
+    """Verify OTP and return JWT + user (signup creates user; login requires existing phone)."""
     svc = AuthService(db)
     try:
-        user, token = svc.complete_phone_otp(body.phone, body.code, body.first_name)
+        user, token = svc.complete_phone_otp(
+            body.phone, body.code, body.first_name, body.intent
+        )
     except OtpProviderError as e:
+        logger.warning(
+            "auth.verify_otp provider_error code=%s ip=%s",
+            e.code,
+            request.client.host if request.client else None,
+        )
         status = 503 if e.code == "CONFIG_ERROR" else 502
         return error_response(e.code, e.message, status)
     except ValueError as e:
         code = e.args[0] if e.args else "ERROR"
+        logger.warning(
+            "auth.verify_otp rejected reason=%s phone_tail=%s ip=%s",
+            code,
+            (body.phone or "")[-4:] if len(body.phone or "") >= 4 else "****",
+            request.client.host if request.client else None,
+        )
         mapping = {
             "INVALID_PHONE": (400, "INVALID_PHONE", "Enter a valid phone number."),
             "INVALID_OTP": (401, "INVALID_OTP", "That code is incorrect. Try again."),
             "OTP_EXPIRED": (400, "OTP_EXPIRED", "This code has expired. Request a new one."),
             "EMAIL_CONFLICT": (409, "EMAIL_CONFLICT", "Unable to create account. Contact support."),
             "ACCOUNT_DISABLED": (403, "ACCOUNT_DISABLED", "This account is disabled."),
+            "PHONE_ALREADY_REGISTERED": (
+                409,
+                "PHONE_ALREADY_REGISTERED",
+                "This number already has an account. Log in instead.",
+            ),
+            "PHONE_NOT_REGISTERED": (
+                404,
+                "PHONE_NOT_REGISTERED",
+                "No account for this number. Use Get Started to sign up.",
+            ),
+            "NAME_REQUIRED": (
+                400,
+                "NAME_REQUIRED",
+                "Enter your first name to create an account.",
+            ),
         }
         if code in mapping:
             status, err_code, msg = mapping[code]
             return error_response(err_code, msg, status)
         return error_response("VERIFICATION_FAILED", str(e), 400)
+
+    logger.info(
+        "auth.verify_otp ok user_id=%s phone_tail=%s ip=%s",
+        user.id,
+        (body.phone or "")[-4:] if len(body.phone or "") >= 4 else "****",
+        request.client.host if request.client else None,
+    )
 
     auth = PhoneAuthData(
         token=token,
