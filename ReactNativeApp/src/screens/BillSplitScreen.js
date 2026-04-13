@@ -645,18 +645,23 @@ export default function BillSplitScreen({ navigation, route }) {
         return;
       }
 
-      // Show the code in an alert first so they can copy it
+      // Create a deep link that opens the app and joins the bill
+      const inviteLink = `https://app.spltr.com/join/${token}`;
+      const appDeepLink = `spltr://join/${token}`;
+
+      // Show the code and link in an alert
       Alert.alert(
         'Invite Friends',
-        `Share this code: ${token}\n\nFriends can join by opening SPLTR and entering this code.`,
+        `Share this link or code:\n\n${inviteLink}\n\nCode: ${token}\n\nFriends can click the link or enter the code in SETTLD to join.`,
         [
           { text: 'Cancel', style: 'cancel' },
           {
-            text: 'Share',
+            text: 'Share Link',
             onPress: async () => {
               await Share.share({
-                message: `Join me on ${billTitle}!\n\nDownload SPLTR and use code: ${token}`,
-                title: `Join ${billTitle}`,
+                message: `Join me to settle ${billTitle}!\n\nClick here: ${inviteLink}\n\nOr download SETTLD and enter code: ${token}`,
+                title: `Settle ${billTitle} on SETTLD`,
+                url: inviteLink, // iOS will use this for iMessage, etc.
               });
             },
           },

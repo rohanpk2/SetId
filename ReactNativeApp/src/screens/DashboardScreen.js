@@ -15,11 +15,10 @@ import {
 import { MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useFocusEffect } from '@react-navigation/native';
 import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
 import { colors, radii, shadows, spacing } from '../theme';
 import { useAuth } from '../contexts/AuthContext';
-import { bills, dashboard as dashboardApi, notifications as notificationsApi } from '../services/api';
+import { bills, dashboard as dashboardApi } from '../services/api';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -136,7 +135,7 @@ function formatRelativeTime(timestamp) {
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
 
-function TopAppBar({ insets, user, onNotificationsPress, onJoinBill, unreadCount }) {
+function TopAppBar({ insets, user, onJoinBill }) {
   const { logout } = useAuth();
 
   const displayName =
@@ -190,23 +189,6 @@ function TopAppBar({ insets, user, onNotificationsPress, onJoinBill, unreadCount
             accessibilityLabel="Join Bill"
           >
             <MaterialIcons name="group-add" size={24} color={colors.secondary} />
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.iconButtonWrap}
-            activeOpacity={0.7}
-            onPress={onNotificationsPress}
-            accessibilityLabel="Notifications"
-          >
-            <MaterialIcons
-              name={unreadCount > 0 ? 'notifications-active' : 'notifications-none'}
-              size={24}
-              color={colors.onSurface}
-            />
-            {unreadCount > 0 ? (
-              <View style={styles.notifBadge}>
-                <Text style={styles.notifBadgeText}>{unreadCount > 9 ? '9+' : unreadCount}</Text>
-              </View>
-            ) : null}
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.iconButtonWrap}
@@ -479,7 +461,6 @@ export default function DashboardScreen({ navigation }) {
   const [recentActivity, setRecentActivity] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [unreadCount, setUnreadCount] = useState(0);
   const [creatingBill, setCreatingBill] = useState(false);
 
   const fetchData = useCallback(async () => {
@@ -501,26 +482,11 @@ export default function DashboardScreen({ navigation }) {
     fetchData().finally(() => setLoading(false));
   }, [fetchData]);
 
-  const fetchUnread = useCallback(async () => {
-    try {
-      const res = await notificationsApi.list(true);
-      setUnreadCount((res.data ?? []).length);
-    } catch {
-      setUnreadCount(0);
-    }
-  }, []);
-
-  useFocusEffect(
-    useCallback(() => {
-      fetchUnread();
-    }, [fetchUnread]),
-  );
-
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await Promise.all([fetchData(), fetchUnread()]);
+    await fetchData();
     setRefreshing(false);
-  }, [fetchData, fetchUnread]);
+  }, [fetchData]);
 
   const handleSettle = (bill) => {
     navigation.navigate('BillSplit', { billId: bill.id });
@@ -559,8 +525,6 @@ export default function DashboardScreen({ navigation }) {
       <TopAppBar
         insets={insets}
         user={user}
-        unreadCount={unreadCount}
-        onNotificationsPress={() => navigation.navigate('Notifications')}
         onJoinBill={() => navigation.navigate('JoinBill')}
       />
 

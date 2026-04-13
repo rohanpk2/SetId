@@ -439,7 +439,7 @@ export default function ReviewPaymentScreen({ navigation, route }) {
 
       const { error: initError } = await initPaymentSheet({
         paymentIntentClientSecret: clientSecret,
-        merchantDisplayName: 'Splitter',
+        merchantDisplayName: 'Setlld',
         style: 'automatic',
       });
 
