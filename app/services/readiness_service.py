@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.models.bill import Bill
 from app.models.payment import Payment
+from app.models.virtual_card import VirtualCard
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,17 @@ class ReadinessService:
             raise ValueError("NOT_FOUND")
         if str(bill.owner_id) != actor_id:
             raise ValueError("FORBIDDEN")
+
+        active_card = (
+            self.db.query(VirtualCard)
+            .filter(
+                VirtualCard.bill_id == bill_id,
+                VirtualCard.status.in_(["active", "pending"]),
+            )
+            .first()
+        )
+        if active_card:
+            raise ValueError("ACTIVE_CARD_EXISTS")
 
         bill.ready_to_pay = False
         bill.ready_marked_at = None

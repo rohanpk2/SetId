@@ -19,11 +19,17 @@ def trigger_payment_reminders(
 ):
     """
     Run the unpaid-payment reminder cycle once.
-    When INTERNAL_JOB_SECRET is set, require matching X-Job-Secret header.
+    Requires INTERNAL_JOB_SECRET to be configured and matched via X-Job-Secret header.
     """
-    if settings.INTERNAL_JOB_SECRET:
-        if x_job_secret != settings.INTERNAL_JOB_SECRET:
-            return error_response("UNAUTHORIZED", "Invalid job secret", 401)
+    if not settings.INTERNAL_JOB_SECRET:
+        return error_response(
+            "NOT_CONFIGURED",
+            "INTERNAL_JOB_SECRET must be set to use this endpoint",
+            503,
+        )
+
+    if x_job_secret != settings.INTERNAL_JOB_SECRET:
+        return error_response("UNAUTHORIZED", "Invalid job secret", 401)
 
     run_reminders_job()
     return success_response(message="Payment reminder job completed")

@@ -38,7 +38,7 @@ def mark_notification_read(
 ):
     svc = NotificationService(db)
     try:
-        notification = svc.mark_read(str(notification_id))
+        notification = svc.mark_read(str(notification_id), str(current_user.id))
     except ValueError:
         return error_response("NOT_FOUND", "Notification not found", 404)
 
