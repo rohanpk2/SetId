@@ -40,10 +40,13 @@ class NotificationService:
 
         return query.order_by(Notification.created_at.desc()).all()
 
-    def mark_read(self, notification_id: str) -> Notification:
+    def mark_read(self, notification_id: str, user_id: str) -> Notification:
         notification = (
             self.db.query(Notification)
-            .filter(Notification.id == notification_id)
+            .filter(
+                Notification.id == notification_id,
+                Notification.user_id == user_id,
+            )
             .first()
         )
         if not notification:

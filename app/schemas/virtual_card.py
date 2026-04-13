@@ -12,10 +12,6 @@ class VirtualCardOut(BaseModel):
     is_active: bool
     spending_limit_cents: int | None = None
     currency: str
-    card_number: str | None = None
-    exp_month: int | None = None
-    exp_year: int | None = None
-    cvc: str | None = None
     created_at: datetime
     updated_at: datetime
 
