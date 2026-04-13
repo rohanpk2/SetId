@@ -102,7 +102,7 @@ function compactDisplayName(raw) {
   return raw;
 }
 
-const DRAFT_BILL_TITLE = 'Untitled Bill';
+const DRAFT_BILL_TITLE = 'Splitter Bill';
 
 const ACTIVITY_TYPE_META = {
   bill_created: { icon: 'receipt-long', positive: true },
@@ -136,7 +136,7 @@ function formatRelativeTime(timestamp) {
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
 
-function TopAppBar({ insets, user, onNotificationsPress, unreadCount }) {
+function TopAppBar({ insets, user, onNotificationsPress, onJoinBill, unreadCount }) {
   const { logout } = useAuth();
 
   const displayName =
@@ -183,6 +183,14 @@ function TopAppBar({ insets, user, onNotificationsPress, unreadCount }) {
           </View>
         </View>
         <View style={styles.topBarActions}>
+          <TouchableOpacity
+            style={styles.iconButtonWrap}
+            activeOpacity={0.7}
+            onPress={onJoinBill}
+            accessibilityLabel="Join Bill"
+          >
+            <MaterialIcons name="group-add" size={24} color={colors.secondary} />
+          </TouchableOpacity>
           <TouchableOpacity
             style={styles.iconButtonWrap}
             activeOpacity={0.7}
@@ -282,7 +290,7 @@ function FeaturedBillCard({ bill, onSettle }) {
         )}
       </View>
       <Text style={styles.featuredTitle} numberOfLines={1}>
-        {bill.title || bill.merchant_name || 'Untitled Bill'}
+        {bill.title || bill.merchant_name}
       </Text>
       <Text style={styles.featuredSubtitle}>
         Split between {bill.member_count} {bill.member_count === 1 ? 'person' : 'people'}
@@ -315,7 +323,7 @@ function SecondaryBillCard({ bill }) {
       </View>
       <View style={styles.secondaryInfo}>
         <Text style={styles.secondaryTitle} numberOfLines={1}>
-          {bill.title || bill.merchant_name || 'Untitled'}
+          {bill.title || bill.merchant_name}
         </Text>
         <Text style={styles.secondarySubtitle}>
           {bill.status} • {bill.member_count} {bill.member_count === 1 ? 'member' : 'members'}
@@ -553,6 +561,7 @@ export default function DashboardScreen({ navigation }) {
         user={user}
         unreadCount={unreadCount}
         onNotificationsPress={() => navigation.navigate('Notifications')}
+        onJoinBill={() => navigation.navigate('JoinBill')}
       />
 
       <ScrollView

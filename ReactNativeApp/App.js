@@ -18,6 +18,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 
+import { StripeProvider } from '@stripe/stripe-react-native';
 import { AuthProvider, useAuth } from './src/contexts/AuthContext';
 import LandingScreen from './src/screens/LandingScreen';
 import PhoneAuthScreen from './src/screens/PhoneAuthScreen';
@@ -31,6 +32,7 @@ import ActivityDetailScreen from './src/screens/ActivityDetailScreen';
 import ScanReceiptScreen from './src/screens/ScanReceiptScreen';
 import FundsCollectedScreen from './src/screens/FundsCollectedScreen';
 import NotificationsScreen from './src/screens/NotificationsScreen';
+import JoinBillScreen from './src/screens/JoinBillScreen';
 import MainTabNavigator from './src/navigation/MainTabNavigator';
 
 const AuthStack = createNativeStackNavigator();
@@ -101,6 +103,11 @@ function MainNavigator() {
         component={NotificationsScreen}
         options={{ animation: 'slide_from_right' }}
       />
+      <MainStack.Screen
+        name="JoinBill"
+        component={JoinBillScreen}
+        options={{ animation: 'slide_from_right' }}
+      />
     </MainStack.Navigator>
   );
 }
@@ -143,12 +150,14 @@ export default function App() {
   return (
     <GestureHandlerRootView style={styles.gestureRoot}>
       <SafeAreaProvider>
-        <AuthProvider>
-          <NavigationContainer>
-            <StatusBar style="dark" />
-            <RootNavigator />
-          </NavigationContainer>
-        </AuthProvider>
+        <StripeProvider publishableKey="pk_live_51RF1vSA5ckD2kd7M4w7D7m5FPVLiZNSjAUy1VcwulfDZOvmeLZ62RPK8igrgmhKmj34BtdXDO7CBZSPuWGjHjKin00yWltIKKh">
+          <AuthProvider>
+            <NavigationContainer>
+              <StatusBar style="dark" />
+              <RootNavigator />
+            </NavigationContainer>
+          </AuthProvider>
+        </StripeProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );

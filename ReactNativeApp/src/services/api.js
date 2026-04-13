@@ -2,8 +2,16 @@ import axios from 'axios';
 import { Platform } from 'react-native';
 import { getToken, removeToken } from './authStorage';
 
+// Use your computer's local IP for physical devices/Expo Go
+// Android emulator uses 10.0.2.2 to reach host machine
+// iOS simulator can use localhost
+// Physical devices need your computer's LAN IP
 const DEV_BASE =
-  Platform.OS === 'android' ? 'http://10.0.2.2:8000' : 'http://localhost:8000';
+  Platform.OS === 'android'
+    ? 'http://10.0.2.2:8000'  // Android emulator
+    : __DEV__ && Platform.OS === 'ios'
+      ? 'http://10.195.57.116:8000'  // iOS device/Expo - use your Mac's IP
+      : 'http://localhost:8000';  // iOS simulator
 
 /** Dev/prod API origin — exported for debug logs (LoginScreen, etc.). */
 export const BASE_URL = __DEV__ ? DEV_BASE : 'https://api.spltr.app';

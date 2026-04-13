@@ -9,12 +9,13 @@ import {
   ActivityIndicator,
   Alert,
   TextInput,
+  Share,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, radii, shadows } from '../theme';
-import { bills as billsApi, assignments as assignmentsApi, receipts as receiptsApi } from '../services/api';
+import { bills as billsApi, assignments as assignmentsApi, receipts as receiptsApi, members as membersApi } from '../services/api';
 
 function formatCurrency(value) {
   const num = typeof value === 'string' ? parseFloat(value) : (value ?? 0);
@@ -53,7 +54,7 @@ function isDraftItemId(itemId) {
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
 
-function TopAppBar({ insets, onBack, title }) {
+function TopAppBar({ insets, onBack, title, onShare }) {
   return (
     <View style={[styles.topBar, { paddingTop: insets.top + 8 }]}>
       <View style={styles.topBarInner}>
@@ -65,8 +66,8 @@ function TopAppBar({ insets, onBack, title }) {
           )}
           <Text style={styles.appTitle} numberOfLines={1}>{title || 'Split Bill'}</Text>
         </View>
-        <TouchableOpacity style={styles.iconButton} activeOpacity={0.7}>
-          <MaterialIcons name="more-vert" size={24} color={colors.onSurface} />
+        <TouchableOpacity style={styles.iconButton} activeOpacity={0.7} onPress={onShare}>
+          <MaterialIcons name="person-add" size={24} color={colors.secondary} />
         </TouchableOpacity>
       </View>
     </View>
@@ -74,7 +75,7 @@ function TopAppBar({ insets, onBack, title }) {
 }
 
 function MerchantHeader({ bill }) {
-  const billTitle = bill.title || bill.merchant_name || 'Untitled Bill';
+  const billTitle = bill.title || bill.merchant_name;
   const merchant = bill.merchant_name || bill.title;
   return (
     <View style={styles.merchantHeader}>
@@ -633,6 +634,41 @@ export default function BillSplitScreen({ navigation, route }) {
     }
   }, [applyServerItemState, billId, buildReceiptEditPayload, isEditingItems, savingItemEdits]);
 
+  const handleShareBill = async () => {
+    try {
+      const res = await membersApi.createInviteLink(billId);
+      const token = res.data?.token || res.token;
+      const billTitle = bill.title || bill.merchant_name || 'this bill';
+      
+      if (!token) {
+        Alert.alert('Error', 'Could not create invite code');
+        return;
+      }
+
+      // Show the code in an alert first so they can copy it
+      Alert.alert(
+        'Invite Friends',
+        `Share this code: ${token}\n\nFriends can join by opening SPLTR and entering this code.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Share',
+            onPress: async () => {
+              await Share.share({
+                message: `Join me on ${billTitle}!\n\nDownload SPLTR and use code: ${token}`,
+                title: `Join ${billTitle}`,
+              });
+            },
+          },
+        ]
+      );
+    } catch (err) {
+      if (err.message !== 'User did not share') {
+        Alert.alert('Error', err?.error?.message ?? 'Failed to create invite code');
+      }
+    }
+  };
+
   const handleSend = async () => {
     if (isEditingItems || savingItemEdits) {
       Alert.alert('Save items first', 'Tap Done to save your receipt edits before sending to members.');
@@ -693,6 +729,7 @@ export default function BillSplitScreen({ navigation, route }) {
         insets={insets}
         onBack={navigation?.canGoBack?.() ? navigation.goBack : null}
         title={bill.title || bill.merchant_name}
+        onShare={handleShareBill}
       />
 
       <ScrollView

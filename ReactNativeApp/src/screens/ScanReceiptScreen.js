@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -13,6 +13,7 @@ import {
 import { MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import { colors, radii, shadows } from '../theme';
 import { receipts } from '../services/api';
 import * as ImagePicker from 'expo-image-picker';
@@ -85,80 +86,128 @@ function CornerBracket({ position }) {
 export default function ScanReceiptScreen({ navigation, route }) {
   const insets = useSafeAreaInsets();
   const billId = route?.params?.billId;
+  const cameraRef = useRef(null);
+
+  const [permission, requestPermission] = useCameraPermissions();
+  const [cameraReady, setCameraReady] = useState(false);
+  const autoRequestedPermission = useRef(false);
 
   const [uploading, setUploading] = useState(false);
   const [parsing, setParsing] = useState(false);
-  const [statusText, setStatusText] = useState('Position receipt in frame');
+  const [capturing, setCapturing] = useState(false);
+  const [statusText, setStatusText] = useState('Line up the receipt, then tap Capture');
   const [parsedData, setParsedData] = useState(null);
 
-  const pickAndUpload = async (useCamera) => {
-    let cleanupStatusTimer;
+  useEffect(() => {
+    if (!permission || permission.granted || autoRequestedPermission.current) return;
+    if (!permission.canAskAgain) return;
+    autoRequestedPermission.current = true;
+    requestPermission();
+  }, [permission, requestPermission]);
 
-    try {
-      const options = {
-        mediaTypes: ['images'],
-        quality: 0.8,
-        allowsEditing: true,
-      };
+  const processReceiptUri = useCallback(
+    async (uri, mimeType = 'image/jpeg', fileName = 'receipt.jpg') => {
+      let cleanupStatusTimer;
 
-      let result;
-      if (useCamera) {
-        const { status } = await ImagePicker.requestCameraPermissionsAsync();
-        if (status !== 'granted') {
-          Alert.alert('Permission needed', 'Camera access is required to scan receipts.');
-          return;
-        }
-        result = await ImagePicker.launchCameraAsync(options);
-      } else {
-        result = await ImagePicker.launchImageLibraryAsync(options);
+      try {
+        setUploading(true);
+        setStatusText('Uploading receipt…');
+
+        const file = {
+          uri,
+          name: fileName,
+          type: mimeType,
+        };
+
+        await receipts.upload(billId, file);
+        setUploading(false);
+
+        setParsing(true);
+        setStatusText('Extracting text…');
+        cleanupStatusTimer = setTimeout(() => {
+          setStatusText('Cleaning receipt…');
+        }, 900);
+
+        const parseRes = await receipts.parse(billId);
+        clearTimeout(cleanupStatusTimer);
+        setParsedData(parseRes.data);
+        setParsing(false);
+        setStatusText('Receipt parsed!');
+
+        setTimeout(() => {
+          navigation.navigate('BillSplit', { billId, refresh: Date.now() });
+        }, 800);
+      } catch (err) {
+        if (cleanupStatusTimer) clearTimeout(cleanupStatusTimer);
+        setUploading(false);
+        setParsing(false);
+        setStatusText('Line up the receipt, then tap Capture');
+        Alert.alert('Error', err?.message ?? err?.error?.message ?? 'Failed to process receipt');
       }
+    },
+    [billId, navigation],
+  );
+
+  const captureFromPreview = async () => {
+    if (!cameraRef.current || !cameraReady) {
+      Alert.alert('Camera not ready', 'Please wait a moment and try again.');
+      return;
+    }
+
+    setCapturing(true);
+    try {
+      const photo = await cameraRef.current.takePictureAsync({ quality: 0.85 });
+      const ext = photo.format === 'png' ? 'png' : 'jpg';
+      const mime = ext === 'png' ? 'image/png' : 'image/jpeg';
+      await processReceiptUri(photo.uri, mime, `receipt.${ext}`);
+    } catch (err) {
+      Alert.alert('Capture failed', err?.message ?? 'Could not take photo');
+    } finally {
+      setCapturing(false);
+    }
+  };
+
+  const pickFromGallery = async () => {
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        quality: 0.85,
+        allowsEditing: true,
+      });
 
       if (result.canceled) return;
 
       const asset = result.assets[0];
-      setUploading(true);
-      setStatusText('Uploading receipt…');
-
-      const file = {
-        uri: asset.uri,
-        name: asset.fileName || 'receipt.jpg',
-        type: asset.mimeType || 'image/jpeg',
-      };
-
-      await receipts.upload(billId, file);
-      setUploading(false);
-
-      setParsing(true);
-      setStatusText('Extracting text…');
-      cleanupStatusTimer = setTimeout(() => {
-        setStatusText('Cleaning receipt…');
-      }, 900);
-
-      const parseRes = await receipts.parse(billId);
-      clearTimeout(cleanupStatusTimer);
-      setParsedData(parseRes.data);
-      setParsing(false);
-      setStatusText('Receipt parsed!');
-
-      setTimeout(() => {
-        navigation.navigate('BillSplit', { billId, refresh: Date.now() });
-      }, 800);
+      await processReceiptUri(
+        asset.uri,
+        asset.mimeType || 'image/jpeg',
+        asset.fileName || 'receipt.jpg',
+      );
     } catch (err) {
-      if (cleanupStatusTimer) clearTimeout(cleanupStatusTimer);
-      setUploading(false);
-      setParsing(false);
-      setStatusText('Position receipt in frame');
-      Alert.alert('Error', err?.message ?? err?.error?.message ?? 'Failed to process receipt');
+      Alert.alert('Error', err?.message ?? err?.error?.message ?? 'Failed to pick image');
     }
   };
 
-  const busy = uploading || parsing;
+  const busy = uploading || parsing || capturing;
+  const canUseCamera = permission?.granted;
 
   return (
     <View style={styles.root}>
-      <View style={styles.cameraBgPlaceholder}>
-        <MaterialIcons name="photo-camera" size={64} color="rgba(255,255,255,0.15)" />
-      </View>
+      {canUseCamera ? (
+        <CameraView
+          ref={cameraRef}
+          style={StyleSheet.absoluteFillObject}
+          facing="back"
+          onCameraReady={() => setCameraReady(true)}
+        />
+      ) : (
+        <View style={styles.cameraBgPlaceholder}>
+          <MaterialIcons name="photo-camera" size={64} color="rgba(255,255,255,0.15)" />
+          {!permission?.canAskAgain && permission && !permission.granted ? (
+            <Text style={styles.permissionHint}>Camera access is off. Enable it in Settings to scan.</Text>
+          ) : null}
+        </View>
+      )}
 
       {/* Top Bar */}
       <View style={[styles.topBar, { paddingTop: insets.top }]}>
@@ -194,19 +243,18 @@ export default function ScanReceiptScreen({ navigation, route }) {
 
       {/* Bottom Sheet */}
       <View style={[styles.bottomSheet, { paddingBottom: insets.bottom + 24 }]}>
-        {/* Status */}
         <View style={styles.statusCard}>
           <View style={styles.statusHeader}>
             <View>
               <Text style={styles.statusLabel}>STATUS</Text>
               <Text style={styles.statusTitle}>{statusText}</Text>
             </View>
-            {busy && (
+            {/* {busy && (
               <View style={styles.aiBadge}>
                 <PulsingDot />
                 <Text style={styles.aiBadgeText}>AI Processing</Text>
               </View>
-            )}
+            )} */}
           </View>
 
           {parsedData && (
@@ -225,34 +273,69 @@ export default function ScanReceiptScreen({ navigation, route }) {
           )}
         </View>
 
-        {/* Actions */}
         {!busy && !parsedData && (
-          <View style={styles.actionRow}>
-            <TouchableOpacity
-              activeOpacity={0.85}
-              onPress={() => pickAndUpload(true)}
-              style={styles.actionBtnPrimary}
-            >
-              <LinearGradient
-                colors={[colors.secondary, colors.secondaryDim]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.actionGradient}
+          <>
+            {!canUseCamera && (
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={() => requestPermission()}
+                style={styles.actionBtnPrimary}
               >
-                <MaterialIcons name="photo-camera" size={22} color={colors.onSecondary} />
-                <Text style={styles.actionTextPrimary}>Take Photo</Text>
-              </LinearGradient>
-            </TouchableOpacity>
+                <LinearGradient
+                  colors={[colors.secondary, colors.secondaryDim]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.actionGradient}
+                >
+                  <MaterialIcons name="videocam" size={22} color={colors.onSecondary} />
+                  <Text style={styles.actionTextPrimary}>Allow camera access</Text>
+                </LinearGradient>
+              </TouchableOpacity>
+            )}
 
-            <TouchableOpacity
-              activeOpacity={0.85}
-              onPress={() => pickAndUpload(false)}
-              style={styles.actionBtnSecondary}
-            >
-              <MaterialIcons name="image" size={22} color={colors.secondary} />
-              <Text style={styles.actionTextSecondary}>Gallery</Text>
-            </TouchableOpacity>
-          </View>
+            {canUseCamera && (
+              <View style={styles.actionRow}>
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={captureFromPreview}
+                  disabled={!cameraReady}
+                  style={[styles.actionBtnPrimary, !cameraReady && { opacity: 0.55 }]}
+                >
+                  <LinearGradient
+                    colors={[colors.secondary, colors.secondaryDim]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.actionGradient}
+                  >
+                    <MaterialIcons name="camera-alt" size={22} color={colors.onSecondary} />
+                    <Text style={styles.actionTextPrimary}>
+                      {cameraReady ? 'Capture' : 'Starting camera…'}
+                    </Text>
+                  </LinearGradient>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={pickFromGallery}
+                  style={styles.actionBtnSecondary}
+                >
+                  <MaterialIcons name="image" size={22} color={colors.secondary} />
+                  <Text style={styles.actionTextSecondary}>Gallery</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {!canUseCamera && (
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={pickFromGallery}
+                style={styles.galleryOnlyBtn}
+              >
+                <MaterialIcons name="image" size={22} color={colors.secondary} />
+                <Text style={styles.actionTextSecondary}>Choose from gallery</Text>
+              </TouchableOpacity>
+            )}
+          </>
         )}
 
         {busy && (
@@ -285,6 +368,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#1a1a1a',
+    paddingHorizontal: 32,
+  },
+  permissionHint: {
+    marginTop: 16,
+    fontFamily: 'Inter_500Medium',
+    fontSize: 14,
+    color: 'rgba(255,255,255,0.55)',
+    textAlign: 'center',
+    lineHeight: 20,
   },
 
   topBar: {
@@ -493,6 +585,15 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '700',
     color: colors.secondary,
+  },
+  galleryOnlyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 16,
+    borderRadius: radii.full,
+    backgroundColor: 'rgba(255,255,255,0.9)',
   },
   loadingRow: {
     alignItems: 'center',

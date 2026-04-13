@@ -1,9 +1,8 @@
 import React, { useCallback, useRef } from 'react';
-import { View, Text, StyleSheet, Dimensions } from 'react-native';
+import { View, Text, StyleSheet, Dimensions, Image } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 
-import WealthSplitLogoMark from '../components/WealthSplitLogoMark';
 import LandingCtaButton from '../components/LandingCtaButton';
 import { colors, spacing } from '../theme';
 
@@ -35,23 +34,26 @@ export default function LandingScreen({ navigation }) {
     <View
       style={[
         styles.root,
-        { paddingTop: insets.top, paddingBottom: insets.bottom + spacing.md },
+        { paddingTop: insets.top, paddingBottom: insets.bottom + spacing.xl },
       ]}
     >
-      <StatusBar style="light" />
+      <StatusBar style="dark" />
 
       <View style={styles.hero}>
-        <View style={styles.logoGlow}>
-          <WealthSplitLogoMark size={Math.min(168, SCREEN_H * 0.2)} color={colors.white} />
+        <View style={styles.logoContainer}>
+          <Image
+            source={require('../../assets/logo.png')}
+            style={styles.logo}
+            resizeMode="contain"
+          />
         </View>
-        <Text style={styles.title}>WealthSplit</Text>
-        <Text style={styles.tagline}>Split bills with friends, effortlessly.</Text>
+        <Text style={styles.title}>Splitter</Text>
+        <Text style={styles.tagline}>CURATED FINANCE</Text>
       </View>
 
-      <View style={[styles.ctaColumn, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+      <View style={styles.ctaColumn}>
         <LandingCtaButton label="Get Started" variant="primary" onPress={goToSignup} />
-        <View style={{ height: spacing.md }} />
-        <LandingCtaButton label="Log In" variant="outline" onPress={goToLogin} />
+        <Text style={styles.footer}>© 2024 CURATOR FINANCE  EDITORIAL PRECISION</Text>
       </View>
     </View>
   );
@@ -60,7 +62,7 @@ export default function LandingScreen({ navigation }) {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: colors.brandLanding,
+    backgroundColor: '#F5F5F5',
     justifyContent: 'space-between',
   },
   hero: {
@@ -69,32 +71,53 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: spacing['2xl'],
   },
-  logoGlow: {
-    shadowColor: '#ffffff',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.35,
-    shadowRadius: 28,
-    elevation: 12,
+  logoContainer: {
+    width: 100,
+    height: 100,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
     marginBottom: spacing['2xl'],
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  logo: {
+    width: 60,
+    height: 60,
   },
   title: {
     fontFamily: 'Manrope_800ExtraBold',
-    fontSize: 32,
+    fontSize: 36,
     fontWeight: '800',
-    color: colors.white,
-    letterSpacing: -0.8,
-    marginBottom: spacing.sm,
+    color: '#2B3437',
+    letterSpacing: -0.5,
+    marginBottom: spacing.xs,
   },
   tagline: {
     fontFamily: 'Inter_500Medium',
-    fontSize: 15,
-    color: 'rgba(255,255,255,0.82)',
+    fontSize: 11,
+    fontWeight: '500',
+    color: '#9CA3AF',
     textAlign: 'center',
-    maxWidth: 280,
-    lineHeight: 22,
+    letterSpacing: 2,
+    textTransform: 'uppercase',
   },
   ctaColumn: {
     paddingHorizontal: spacing['2xl'],
     width: '100%',
+    alignItems: 'center',
+  },
+  footer: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 9,
+    color: '#D1D5DB',
+    textAlign: 'center',
+    letterSpacing: 0.5,
+    marginTop: spacing.md,
+    textTransform: 'uppercase',
   },
 });

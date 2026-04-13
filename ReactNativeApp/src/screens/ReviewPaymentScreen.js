@@ -13,6 +13,7 @@ import {
 import { MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useStripe } from '@stripe/stripe-react-native';
 import { colors, radii, shadows } from '../theme';
 import { useAuth } from '../contexts/AuthContext';
 import { bills as billsApi, assignments as assignmentsApi, payments as paymentsApi } from '../services/api';
@@ -228,6 +229,7 @@ export default function ReviewPaymentScreen({ navigation, route }) {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const billId = route?.params?.billId;
+  const { initPaymentSheet, presentPaymentSheet } = useStripe();
 
   const [loading, setLoading] = useState(true);
   const [bill, setBill] = useState(null);
@@ -323,6 +325,7 @@ export default function ReviewPaymentScreen({ navigation, route }) {
 
     setPaying(true);
     try {
+      // Step 1: Create payment intent on backend
       const createRes = await paymentsApi.createIntent({
         billId,
         memberId: myMember.id,
@@ -331,49 +334,77 @@ export default function ReviewPaymentScreen({ navigation, route }) {
       });
       const payment = createRes.data;
 
-      const finish = async () => {
-        await paymentsApi.confirm(payment.id);
-        navigation.replace('FundsCollected', {
-          amount: total,
-          merchantName: bill?.merchant_name || bill?.title,
-          billTitle: bill?.title,
-          billId,
-        });
-      };
-
+      // Step 2: Mock flow for dev/testing without Stripe keys
       if (isMockPayment(payment)) {
         Alert.alert(
-          'Complete payment',
-          `Charge ${formatMoney(total)}? (Stripe is not configured — this records a test payment.)`,
+          'Test Payment',
+          `Confirm test charge of ${formatMoney(total)}?`,
           [
-            { text: 'Cancel', style: 'cancel' },
+            { text: 'Cancel', style: 'cancel', onPress: () => setPaying(false) },
             {
-              text: 'Pay',
-              onPress: () =>
-                finish().catch((e) => Alert.alert('Error', e?.error?.message ?? 'Failed to confirm')),
+              text: 'Confirm',
+              onPress: async () => {
+                try {
+                  await paymentsApi.confirm(payment.id);
+                  navigation.replace('FundsCollected', {
+                    amount: total,
+                    merchantName: bill?.merchant_name || bill?.title,
+                    billTitle: bill?.title,
+                    billId,
+                  });
+                } catch (e) {
+                  Alert.alert('Error', e?.error?.message ?? 'Failed to confirm');
+                } finally {
+                  setPaying(false);
+                }
+              },
             },
           ],
         );
-      } else {
-        Alert.alert(
-          'Payment intent created',
-          'Use Stripe PaymentSheet with the client secret from this response. In __DEV__ you can still confirm without charging a card.',
-          [
-            { text: 'Cancel', style: 'cancel' },
-            ...(typeof __DEV__ !== 'undefined' && __DEV__
-              ? [
-                  {
-                    text: 'Confirm (dev)',
-                    onPress: () =>
-                      finish().catch((e) => Alert.alert('Error', e?.error?.message ?? 'Failed')),
-                  },
-                ]
-              : []),
-          ],
-        );
+        return;
       }
+
+      // Step 3: Real Stripe flow - init PaymentSheet with client secret
+      const clientSecret = payment.stripe_client_secret;
+      if (!clientSecret) {
+        Alert.alert('Error', 'No payment client secret returned from server.');
+        setPaying(false);
+        return;
+      }
+
+      const { error: initError } = await initPaymentSheet({
+        paymentIntentClientSecret: clientSecret,
+        merchantDisplayName: 'Splitter',
+        style: 'automatic',
+      });
+
+      if (initError) {
+        Alert.alert('Payment error', initError.message);
+        setPaying(false);
+        return;
+      }
+
+      // Step 4: Present Stripe's native payment sheet
+      const { error: payError } = await presentPaymentSheet();
+
+      if (payError) {
+        if (payError.code !== 'Canceled') {
+          Alert.alert('Payment failed', payError.message);
+        }
+        setPaying(false);
+        return;
+      }
+
+      // Step 5: Payment succeeded — confirm on backend
+      await paymentsApi.confirm(payment.id);
+      navigation.replace('FundsCollected', {
+        amount: total,
+        merchantName: bill?.merchant_name || bill?.title,
+        billTitle: bill?.title,
+        billId,
+      });
     } catch (err) {
-      Alert.alert('Payment failed', err?.error?.message ?? 'Could not start payment');
+      Alert.alert('Payment failed', err?.error?.message ?? 'Could not process payment');
     } finally {
       setPaying(false);
     }
