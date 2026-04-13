@@ -106,6 +106,13 @@ def get_public_payment(token: str, db: Session = Depends(get_db)):
             }
             break
 
+    # Add service fee info
+    service_fee_info = {
+        "type": bill.service_fee_type or settings.SERVICE_FEE_TYPE,
+        "amount": str(bill.service_fee),
+        "percentage": str(bill.service_fee_percentage) if bill.service_fee_percentage else None,
+    }
+
     return success_response(
         data={
             "status": "pending",
@@ -120,6 +127,7 @@ def get_public_payment(token: str, db: Session = Depends(get_db)):
             "stripe_publishable_key": settings.STRIPE_PUBLISHABLE_KEY,
             "items": items,
             "breakdown": member_breakdown,
+            "service_fee": service_fee_info,
             "pay_url": f"{base}/pay/{token}",
             "deep_link": deep_link,
         }

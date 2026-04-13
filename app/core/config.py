@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     # Max OTP send attempts per E.164 phone per rolling hour (in addition to IP limits)
     OTP_MAX_SENDS_PER_PHONE_PER_HOUR: int = 5
 
+    # Service fee defaults (can be overridden per-bill)
+    SERVICE_FEE_TYPE: str = "percentage"  # "flat" or "percentage"
+    SERVICE_FEE_FLAT_AMOUNT: float = 0.75  # $0.75 default flat fee
+    SERVICE_FEE_PERCENTAGE: float = 3.5  # 3.5% default percentage fee
+
     model_config = SettingsConfigDict(
         env_file=str(_ENV_FILE),
         env_file_encoding="utf-8",
