@@ -75,6 +75,11 @@ class Settings(BaseSettings):
     SERVICE_FEE_TYPE: str = "percentage"  # "flat" or "percentage"
     SERVICE_FEE_FLAT_AMOUNT: float = 0.75  # $0.75 default flat fee
     SERVICE_FEE_PERCENTAGE: float = 3.5  # 3.5% default percentage fee
+    # Public pay link TTL in minutes (0 = no expiry)
+    PAY_LINK_TTL_MINUTES: int = 20
+
+    # Set to "production" to enable prod safety checks (secret validation, docs disabled)
+    ENVIRONMENT: str = "development"
 
     model_config = SettingsConfigDict(
         env_file=str(_ENV_FILE),

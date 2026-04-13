@@ -138,3 +138,67 @@ class TestMarkReady:
         svc = ReadinessService(db)
         with pytest.raises(ValueError, match="ALREADY_READY"):
             svc.mark_ready("bill-1", "owner-1", reason="fully_collected")
+
+    def test_not_found_raises(self):
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = None
+
+        svc = ReadinessService(db)
+        with pytest.raises(ValueError, match="NOT_FOUND"):
+            svc.mark_ready("no-bill", "owner-1", reason="fully_collected")
+
+
+class TestUnmarkReady:
+    def test_success_clears_readiness(self):
+        db = MagicMock()
+        bill = _mock_bill(total="100.00", ready=True, owner_id="owner-1")
+        bill.ready_reason = "fully_collected"
+        bill.ready_marked_at = "2025-01-01"
+        bill.ready_marked_by = "owner-1"
+        bill.status = "ready_to_pay"
+
+        db.query.return_value.filter.return_value.first.side_effect = [
+            bill,  # bill lookup
+            None,  # active card check (no active card)
+        ]
+
+        svc = ReadinessService(db)
+        result = svc.unmark_ready("bill-1", "owner-1")
+
+        assert result.ready_to_pay is False
+        assert result.ready_reason is None
+        assert result.ready_marked_at is None
+        assert result.ready_marked_by is None
+        assert result.status == "active"
+        db.commit.assert_called_once()
+
+    def test_not_found_raises(self):
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = None
+
+        svc = ReadinessService(db)
+        with pytest.raises(ValueError, match="NOT_FOUND"):
+            svc.unmark_ready("no-bill", "owner-1")
+
+    def test_non_owner_forbidden(self):
+        db = MagicMock()
+        bill = _mock_bill(owner_id="owner-1")
+        db.query.return_value.filter.return_value.first.return_value = bill
+
+        svc = ReadinessService(db)
+        with pytest.raises(ValueError, match="FORBIDDEN"):
+            svc.unmark_ready("bill-1", "not-owner")
+
+    def test_blocked_by_active_virtual_card(self):
+        db = MagicMock()
+        bill = _mock_bill(owner_id="owner-1")
+        active_card = MagicMock()
+
+        db.query.return_value.filter.return_value.first.side_effect = [
+            bill,         # bill lookup
+            active_card,  # active card check finds one
+        ]
+
+        svc = ReadinessService(db)
+        with pytest.raises(ValueError, match="ACTIVE_CARD_EXISTS"):
+            svc.unmark_ready("bill-1", "owner-1")
