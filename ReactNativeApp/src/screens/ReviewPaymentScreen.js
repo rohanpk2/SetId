@@ -150,7 +150,6 @@ export default function ReviewPaymentScreen({ navigation, route }) {
   const [bill, setBill] = useState(null);
   const [participants, setParticipants] = useState([]);
   const [hostShare, setHostShare] = useState(0);
-  const [nudging, setNudging] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async (isBackgroundRefresh = false) => {
@@ -179,15 +178,24 @@ export default function ReviewPaymentScreen({ navigation, route }) {
       const allAssignments = assignRes.data ?? [];
 
       const uid = String(user?.id ?? '');
+      const totalBill = parseFloat(b?.total ?? 0);
+      const allItemsSubtotal = allAssignments.reduce(
+        (s, a) => s + parseFloat(a.amount_owed ?? 0), 0,
+      );
+      const tipAndTax = Math.max(0, totalBill - allItemsSubtotal);
 
       const allMemberData = mems.map((m) => {
         const mAssignments = allAssignments.filter(
           (a) => String(a.bill_member_id) === String(m.id),
         );
-        const amountOwed = mAssignments.reduce(
+        const itemSubtotal = mAssignments.reduce(
           (s, a) => s + parseFloat(a.amount_owed ?? 0),
           0,
         );
+        const tipShare = allItemsSubtotal > 0
+          ? tipAndTax * (itemSubtotal / allItemsSubtotal)
+          : 0;
+        const amountOwed = Math.round((itemSubtotal + tipShare) * 100) / 100;
 
         const mPayments = allPayments.filter(
           (p) => String(p.bill_member_id) === String(m.id) && p.status === 'succeeded',
@@ -222,7 +230,6 @@ export default function ReviewPaymentScreen({ navigation, route }) {
       const hostMember = allMemberData.find((m) => m.isHost);
       setHostShare(hostMember?.amountOwed ?? 0);
 
-      // Only show non-host members in the tracking list
       setParticipants(allMemberData.filter((m) => !m.isHost));
     } catch (err) {
       console.error('[PaymentTracking] load error:', err);
@@ -283,31 +290,6 @@ export default function ReviewPaymentScreen({ navigation, route }) {
   const totalCollected = participants.reduce((s, p) => s + (p.amountPaid || 0), 0);
   const totalRemaining = Math.max(0, amountToCollect - totalCollected);
   const percent = amountToCollect > 0 ? Math.round((totalCollected / amountToCollect) * 100) : 0;
-
-  const pendingParticipants = participants.filter((p) => p.status === 'pending');
-
-  const handleNudge = async () => {
-    if (pendingParticipants.length === 0) {
-      Alert.alert('All paid', 'Everyone has already paid their share.');
-      return;
-    }
-    setNudging(true);
-    try {
-      Alert.alert(
-        'Reminders Sent',
-        `Nudged ${pendingParticipants.length} pending ${pendingParticipants.length === 1 ? 'member' : 'members'}.`,
-      );
-      setParticipants((prev) =>
-        prev.map((p) =>
-          p.status === 'pending'
-            ? { ...p, status: 'reminder_sent', subtitle: 'Reminder sent just now' }
-            : p,
-        ),
-      );
-    } finally {
-      setNudging(false);
-    }
-  };
 
   const handleMarkPaid = () => {
     const unpaid = participants.filter((p) => p.status !== 'paid');
@@ -421,27 +403,7 @@ export default function ReviewPaymentScreen({ navigation, route }) {
 
         {/* Participants */}
         <View style={styles.participantsSection}>
-          <View style={styles.participantsHeader}>
-            <Text style={styles.sectionTitle}>Participant Status</Text>
-            <TouchableOpacity
-              activeOpacity={0.85}
-              onPress={handleNudge}
-              disabled={nudging || pendingParticipants.length === 0}
-              style={[
-                styles.nudgeButton,
-                pendingParticipants.length === 0 && styles.nudgeButtonDisabled,
-              ]}
-            >
-              {nudging ? (
-                <ActivityIndicator size="small" color={colors.onSecondary} />
-              ) : (
-                <>
-                  <MaterialIcons name="campaign" size={16} color={colors.onSecondary} />
-                  <Text style={styles.nudgeButtonText}>Nudge Pending</Text>
-                </>
-              )}
-            </TouchableOpacity>
-          </View>
+          <Text style={styles.sectionTitle}>Participant Status</Text>
 
           {participants.map((p) => (
             <ParticipantRow key={p.id} participant={p} />
@@ -648,12 +610,6 @@ const styles = StyleSheet.create({
   participantsSection: {
     marginBottom: 24,
   },
-  participantsHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
   sectionTitle: {
     fontFamily: 'Manrope_700Bold',
     fontSize: 19,
@@ -661,25 +617,6 @@ const styles = StyleSheet.create({
     letterSpacing: -0.3,
     color: colors.onBackground,
   },
-  nudgeButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: colors.secondary,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: radii.full,
-  },
-  nudgeButtonDisabled: {
-    opacity: 0.4,
-  },
-  nudgeButtonText: {
-    fontFamily: 'Inter_600SemiBold',
-    fontSize: 13,
-    fontWeight: '600',
-    color: colors.onSecondary,
-  },
-
   // Participant card
   participantCard: {
     backgroundColor: colors.surfaceContainerLowest,

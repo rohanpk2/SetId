@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -143,8 +143,6 @@ function BillItemCard({
   members,
   assignedMemberIds,
   onToggleMember,
-  splitCount,
-  onSetSplitCount,
   isEditingItems,
   quantity,
   name,
@@ -158,8 +156,8 @@ function BillItemCard({
   const isUnassigned = assignedMemberIds.length === 0;
   const isZeroQuantity = isEditingItems && quantity === 0;
   const totalPrice = parsePriceValue(price ?? item.total_price);
-  const isShared = splitCount > 1;
-  const perPersonPrice = isShared ? totalPrice / splitCount : totalPrice;
+  const isShared = assignedMemberIds.length > 1;
+  const perPersonPrice = isShared ? totalPrice / assignedMemberIds.length : totalPrice;
 
   return (
     <View
@@ -236,42 +234,19 @@ function BillItemCard({
               ))}
             </View>
 
-            <View style={styles.sharedRow}>
-              <TouchableOpacity
-                onPress={() => onSetSplitCount(splitCount <= 1 ? 2 : 1)}
-                activeOpacity={0.7}
-                style={[styles.sharedToggle, isShared && styles.sharedToggleActive]}
-              >
-                <MaterialIcons
-                  name="group"
-                  size={14}
-                  color={isShared ? colors.onSecondary : colors.onSurfaceVariant}
-                />
-                <Text style={[styles.sharedToggleText, isShared && styles.sharedToggleTextActive]}>
-                  Shared?
-                </Text>
-              </TouchableOpacity>
-
-              {isShared && (
-                <View style={styles.splitStepper}>
-                  <TouchableOpacity
-                    onPress={() => onSetSplitCount(Math.max(2, splitCount - 1))}
-                    activeOpacity={0.6}
-                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                  >
-                    <Text style={[styles.splitStepperBtn, splitCount <= 2 && styles.splitStepperBtnDisabled]}>−</Text>
-                  </TouchableOpacity>
-                  <Text style={styles.splitStepperCount}>{splitCount}</Text>
-                  <TouchableOpacity
-                    onPress={() => onSetSplitCount(splitCount + 1)}
-                    activeOpacity={0.6}
-                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                  >
-                    <Text style={styles.splitStepperBtn}>+</Text>
-                  </TouchableOpacity>
+            {isShared && (
+              <View style={styles.sharedRow}>
+                <View style={[styles.sharedToggle, styles.sharedToggleActive]}>
+                  <MaterialIcons name="group" size={14} color={colors.onSecondary} />
+                  <Text style={[styles.sharedToggleText, styles.sharedToggleTextActive]}>
+                    Split {assignedMemberIds.length} ways
+                  </Text>
                 </View>
-              )}
-            </View>
+                <Text style={styles.sharedCount}>
+                  {formatCurrency(perPersonPrice)} each
+                </Text>
+              </View>
+            )}
           </>
         )}
 
@@ -296,28 +271,24 @@ function BillItemCard({
   );
 }
 
-function MembersSummary({ members, items, assignmentMap, itemPrices, splitCounts, bill }) {
+function MembersSummary({ members, serverAssignments, bill }) {
   const billTotal = parsePriceValue(bill?.total ?? 0);
-  const billSubtotal = items.reduce((s, i) => s + parsePriceValue(itemPrices[i.id] ?? i.total_price), 0);
-  const tipAndTax = Math.max(0, billTotal - billSubtotal);
+
+  // Sum amount_owed from backend assignments per member
+  const allItemsSubtotal = serverAssignments.reduce(
+    (s, a) => s + parsePriceValue(a.amount_owed), 0,
+  );
+  const tipAndTax = Math.max(0, billTotal - allItemsSubtotal);
 
   const memberTotals = members.map((m) => {
-    let subtotal = 0;
-    let itemCount = 0;
-    items.forEach((item) => {
-      const assignees = assignmentMap[item.id] || [];
-      if (assignees.includes(m.id)) {
-        const itemPrice = parsePriceValue(itemPrices[item.id] ?? item.total_price);
-        const sc = splitCounts[item.id] || 1;
-        if (sc > 1) {
-          subtotal += itemPrice / sc;
-        } else {
-          subtotal += itemPrice;
-        }
-        itemCount++;
-      }
-    });
-    const tipShare = billSubtotal > 0 ? tipAndTax * (subtotal / billSubtotal) : 0;
+    const mAssignments = serverAssignments.filter(
+      (a) => String(a.bill_member_id) === String(m.id),
+    );
+    const subtotal = mAssignments.reduce(
+      (s, a) => s + parsePriceValue(a.amount_owed), 0,
+    );
+    const itemCount = mAssignments.length;
+    const tipShare = allItemsSubtotal > 0 ? tipAndTax * (subtotal / allItemsSubtotal) : 0;
     const total = roundMoney(subtotal + tipShare);
     return { ...m, subtotal: roundMoney(subtotal), tipShare: roundMoney(tipShare), total, itemCount };
   });
@@ -369,16 +340,13 @@ function EmptyItems({ onScanReceipt, billId }) {
   );
 }
 
-function BottomActions({ insets, items, assignmentMap, itemPrices, onSend, isHost }) {
+function BottomActions({ insets, items, assignmentMap, serverAssignments, onSend, isHost }) {
   const totalLines = items.length;
   const assignedLines = items.filter((i) => (assignmentMap[i.id] || []).length > 0).length;
 
-  const subtotal = items.reduce((sum, i) => {
-    if ((assignmentMap[i.id] || []).length > 0) {
-      return sum + parsePriceValue(itemPrices[i.id] ?? i.total_price);
-    }
-    return sum;
-  }, 0);
+  const subtotal = serverAssignments.reduce(
+    (s, a) => s + parsePriceValue(a.amount_owed), 0,
+  );
 
   return (
     <View style={[styles.bottomActions, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
@@ -414,8 +382,10 @@ export default function BillSplitScreen({ navigation, route }) {
   const [members, setMembers] = useState([]);
   const [items, setItems] = useState([]);
   const [assignmentMap, setAssignmentMap] = useState({});
-  // splitCounts: itemId -> number (how many people split this item, 1 = not shared)
-  const [splitCounts, setSplitCounts] = useState({});
+  const [serverAssignments, setServerAssignments] = useState([]);
+  // Maps "itemId::memberId" → server assignment id for deletion
+  const serverAssignmentIds = useRef({});
+  const mutatingAssignment = useRef(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savingItemEdits, setSavingItemEdits] = useState(false);
@@ -469,8 +439,9 @@ export default function BillSplitScreen({ navigation, route }) {
     }
   }, []);
 
-  const fetchSummary = useCallback(async () => {
+  const fetchSummary = useCallback(async (force = false) => {
     if (!billId) return;
+    if (!force && mutatingAssignment.current) return;
     try {
       const [summaryRes, assignRes] = await Promise.all([
         billsApi.getSummary(billId),
@@ -481,10 +452,10 @@ export default function BillSplitScreen({ navigation, route }) {
       setMembers(data.members ?? []);
       applyServerItemState(data.bill, data.items ?? []);
 
-      // Build assignmentMap from the dedicated assignments endpoint
-      // so we pick up claims made through the party/web flow
       const allAssignments = assignRes.data ?? [];
+      setServerAssignments(allAssignments);
       const map = {};
+      const idMap = {};
       (data.items ?? []).forEach((item) => {
         map[item.id] = [];
       });
@@ -494,7 +465,9 @@ export default function BillSplitScreen({ navigation, route }) {
         if (!map[itemId].includes(a.bill_member_id)) {
           map[itemId].push(a.bill_member_id);
         }
+        idMap[`${itemId}::${a.bill_member_id}`] = a.id;
       });
+      serverAssignmentIds.current = idMap;
       setAssignmentMap(map);
     } catch {
       // keep whatever state we have
@@ -539,20 +512,48 @@ export default function BillSplitScreen({ navigation, route }) {
 
   useBillWebSocket(billId, wsHandlers);
 
-  const handleToggleMember = (itemId, memberId) => {
-    setAssignmentMap((prev) => {
-      const current = prev[itemId] || [];
-      const has = current.includes(memberId);
-      return {
+  const handleToggleMember = async (itemId, memberId) => {
+    const current = assignmentMap[itemId] || [];
+    const has = current.includes(memberId);
+
+    // Optimistic local update
+    setAssignmentMap((prev) => ({
+      ...prev,
+      [itemId]: has
+        ? (prev[itemId] || []).filter((id) => id !== memberId)
+        : [...(prev[itemId] || []), memberId],
+    }));
+
+    mutatingAssignment.current = true;
+    try {
+      if (has) {
+        const assignId = serverAssignmentIds.current[`${itemId}::${memberId}`];
+        if (assignId) {
+          await assignmentsApi.delete(billId, assignId);
+          delete serverAssignmentIds.current[`${itemId}::${memberId}`];
+        }
+      } else {
+        await assignmentsApi.create(billId, [
+          { receipt_item_id: itemId, bill_member_id: memberId, share_type: 'equal', share_value: 0 },
+        ]);
+      }
+      // Refresh from server to get accurate IDs and recalculated amounts
+      await fetchSummary(true);
+    } catch (err) {
+      console.warn('Assignment toggle failed, reverting:', err);
+      // Revert optimistic update on failure
+      setAssignmentMap((prev) => ({
         ...prev,
-        [itemId]: has ? current.filter((id) => id !== memberId) : [...current, memberId],
-      };
-    });
+        [itemId]: has
+          ? [...(prev[itemId] || []), memberId]
+          : (prev[itemId] || []).filter((id) => id !== memberId),
+      }));
+    } finally {
+      mutatingAssignment.current = false;
+    }
   };
 
-  const handleSetSplitCount = (itemId, count) => {
-    setSplitCounts((prev) => ({ ...prev, [itemId]: count }));
-  };
+
 
   const adjustItemQuantity = useCallback(
     (itemId, delta) => {
@@ -790,33 +791,17 @@ export default function BillSplitScreen({ navigation, route }) {
       return;
     }
 
-    const assignmentsList = [];
-    Object.entries(assignmentMap).forEach(([itemId, memberIds]) => {
-      if (!visibleItemIds.has(itemId)) return;
-      const sc = splitCounts[itemId] || 1;
-
-      memberIds.forEach((memberId) => {
-        assignmentsList.push({
-          receipt_item_id: itemId,
-          bill_member_id: memberId,
-          share_type: 'equal',
-          share_value: 0,
-          split_count: sc,
-        });
-      });
-    });
-
-    if (assignmentsList.length === 0) {
+    const hasAnyAssignment = Object.values(assignmentMap).some((ids) => ids.length > 0);
+    if (!hasAnyAssignment) {
       Alert.alert('No assignments', 'Assign at least one item to a member before continuing.');
       return;
     }
 
     setSaving(true);
     try {
-      // Check if host has a payment method on file
       const pmRes = await paymentMethodsApi.list();
       const paymentMethods = pmRes.data ?? [];
-      
+
       if (paymentMethods.length === 0) {
         setSaving(false);
         Alert.alert(
@@ -828,10 +813,7 @@ export default function BillSplitScreen({ navigation, route }) {
               text: 'Add Card',
               onPress: () => {
                 navigation.navigate('AddPaymentMethod', {
-                  onSuccess: () => {
-                    // Retry sending after adding payment method
-                    handleSend();
-                  },
+                  onSuccess: () => handleSend(),
                 });
               },
             },
@@ -840,18 +822,9 @@ export default function BillSplitScreen({ navigation, route }) {
         return;
       }
 
-      // Check if assignments already exist on the server
-      const existingRes = await assignmentsApi.list(billId);
-      const existingAssignments = existingRes.data ?? [];
-      
-      // Only create assignments if none exist yet
-      if (existingAssignments.length === 0) {
-        await assignmentsApi.create(billId, assignmentsList);
-      }
-      
       navigation.navigate('ReviewPayment', { billId });
     } catch (err) {
-      Alert.alert('Error', err?.error?.message ?? 'Failed to save assignments');
+      Alert.alert('Error', err?.error?.message ?? 'Failed to proceed');
     } finally {
       setSaving(false);
     }
@@ -967,8 +940,6 @@ export default function BillSplitScreen({ navigation, route }) {
                   members={members}
                   assignedMemberIds={assignmentMap[item.id] || []}
                   onToggleMember={handleToggleMember}
-                  splitCount={splitCounts[item.id] || 1}
-                  onSetSplitCount={(count) => handleSetSplitCount(item.id, count)}
                   isEditingItems={isEditingItems}
                   quantity={itemQuantities[item.id] ?? item.quantity ?? 0}
                   name={itemNames[item.id] ?? item.name ?? ''}
@@ -985,10 +956,7 @@ export default function BillSplitScreen({ navigation, route }) {
             {members.length > 0 && visibleItems.length > 0 && (
               <MembersSummary
                 members={members}
-                items={visibleItems}
-                assignmentMap={assignmentMap}
-                itemPrices={itemPrices}
-                splitCounts={splitCounts}
+                serverAssignments={serverAssignments}
                 bill={bill}
               />
             )}
@@ -1001,7 +969,7 @@ export default function BillSplitScreen({ navigation, route }) {
           insets={insets}
           items={visibleItems}
           assignmentMap={assignmentMap}
-          itemPrices={itemPrices}
+          serverAssignments={serverAssignments}
           onSend={handleSend}
           isHost={true}
         />

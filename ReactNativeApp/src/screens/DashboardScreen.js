@@ -22,69 +22,7 @@ import { bills, dashboard as dashboardApi } from '../services/api';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
-const AVATAR_URLS = [
-  'https://lh3.googleusercontent.com/aida-public/AB6AXuBYLmd0VIxB-yqNOZYE5J3nfTBJIL1xOlT3bLhEdzz0uby2GUFny-G8x29r0TsDvXwy10TMWDXr7grX3d85sC_S8II-uDRsLMcIIk_WmLmVTbEXMDtxHN8BHbabhhQ_u98KZnw_5-RvBi8s55yuXvTFdisZPFXaajqT5j-bPssoTWz9T9yAg0fgRSeorXDlFyk_94RD-T34hVuI3Rewgjvtdlg47Zr_rHZdwzU4ycMmcVZ_wH2AW-lp6KjQ7gvdtvTGECMvx_uF',
-  'https://lh3.googleusercontent.com/aida-public/AB6AXuALBynKcZ2zAfZXmMosryjI7bKzm63L8-uh56nHFFxgoXd-wnYJ8Idxwl-5ZQOWVOzL3EexU-zhaicDw46fAhASygOJkX7xZ9UjMkrpogho90ozA2CXLcPIOmpZZ0ade_4wCijdSmiGKFHM_KjH6nsH77hfb1bLYCkkXY4oEFb1hRvVKnAL5GzZp_zFDU_ZM13MPCtHUeIbZUdcK1orNyenx5ifv2mx-Jf1i2duODq_oiMM64OfiU-BcUP1_LGVl1veeaLoCQU-',
-  'https://lh3.googleusercontent.com/aida-public/AB6AXuA_41JOXkyhaJ_Xn8N-qlkwfZCg5XHHS6JC5M2WdblKrNGkIrpNopGts-xy0JDGGjYp0p8mHb-NgeuUWBYdAffVFFvMfKGymTT0r3AUxIpVu5OCRl-B_mR9N-GXDQsyY7GcGUnGvuWYf2300syGHnrebLhOn1LnJfqxBl4dsOTEslYuSrpCSNpcpy_TvKLy5DQI2Niy15HWTAWd2MPoU5lvQOEL2U9ZYSSZLlQdPXyiJ1marpgHthRfyEZILOdAhig6LCZZ93x5',
-];
 
-const PROFILE_URL =
-  'https://lh3.googleusercontent.com/aida-public/AB6AXuBPVqPqKe3UPsOPFyxVrVrEcM8dkxixaNRZHHMFRfgXtVAmDdLs8FKfSTdj5xKA5GfDQ3_8tIJHy05RnXx6t-Dk_yX6tOjX3BqyXo7u4CS-90rOFCGYzf4ONoJzf9E8mx0UBKYRCS9h-3IXlCngwsCGsauul2KyGDq7cf10JPI5tSHJ3shFQrFyQZBg4ryv0nuz74NhX0fUIGAm1ZTOos3LJgxHJpK7-AjDC90-UjvzUCeBav5Y-OuDkhDJmSEQKbytfn3YEnA8';
-
-const BILLS = [
-  {
-    id: '1',
-    title: 'Starbucks Mornings',
-    subtitle: 'Ongoing \u2022 3 members',
-    amount: '$42.50',
-    icon: 'local-cafe',
-    iconColor: colors.secondary,
-  },
-  {
-    id: '2',
-    title: 'Weekly Groceries',
-    subtitle: 'Shared with Sarah',
-    amount: '$128.15',
-    icon: 'shopping-bag',
-    iconColor: colors.primary,
-  },
-];
-
-const ACTIVITY = [
-  {
-    id: '1',
-    title: 'Sushi Corner',
-    date: 'Yesterday, 8:30 PM',
-    amount: '+$12.50',
-    status: 'Settled',
-    icon: 'restaurant-menu',
-    positive: true,
-  },
-  {
-    id: '2',
-    title: 'Blue Bottle Caf\u00e9',
-    date: 'Aug 24, 10:15 AM',
-    amount: '-$8.40',
-    status: 'Pending',
-    icon: 'local-cafe',
-    positive: false,
-  },
-  {
-    id: '3',
-    title: 'Cineplex Cinema',
-    date: 'Aug 22, 11:00 PM',
-    amount: '+$45.00',
-    status: 'Settled',
-    icon: 'movie',
-    positive: true,
-  },
-];
-
-const NAV_ITEMS = [
-  { key: 'dashboard', label: 'Dashboard', icon: 'dashboard', active: true },
-  { key: 'activity', label: 'Activity', icon: 'receipt-long', active: false },
-  { key: 'profile', label: 'Profile', icon: 'person', active: false },
-];
 
 /** Keeps header compact so action icons stay on-screen (E.164 is very long). */
 function compactDisplayName(raw) {
@@ -337,12 +275,7 @@ function ActiveBillsSection({ bills, onSettle }) {
   return (
     <View style={styles.section}>
       <View style={styles.sectionHeader}>
-        <Text style={styles.sectionTitle}>Active Bills</Text>
-        {bills.length > 3 && (
-          <TouchableOpacity activeOpacity={0.7}>
-            <Text style={styles.viewAllText}>View All</Text>
-          </TouchableOpacity>
-        )}
+        <Text style={styles.sectionTitle}>Active Bills</Text>        
       </View>
       <FeaturedBillCard bill={featured} onSettle={onSettle} />
       {rest.length > 0 && <View style={styles.secondaryBillsGap} />}
@@ -465,14 +398,13 @@ export default function DashboardScreen({ navigation }) {
 
   const fetchData = useCallback(async () => {
     try {
-      const [overviewRes, billsRes, activityRes] = await Promise.all([
+      const [overviewRes, billsRes] = await Promise.allSettled([
         dashboardApi.getOverview(),
         dashboardApi.getActiveBills(),
-        dashboardApi.getRecentActivity(),
       ]);
-      setOverview(overviewRes.data);
-      setActiveBills(billsRes.data ?? []);
-      setRecentActivity(activityRes.data ?? []);
+      if (overviewRes.status === 'fulfilled') setOverview(overviewRes.value.data);
+      if (billsRes.status === 'fulfilled') setActiveBills(billsRes.value.data ?? []);
+      // Recent activity intentionally left empty until backend returns real data
     } catch {
       // silently fail — show whatever data we have
     }
@@ -722,6 +654,7 @@ const styles = StyleSheet.create({
   },
 
   section: {
+    marginTop: 16,
     marginBottom: 32,
   },
   sectionHeader: {
@@ -736,6 +669,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: -0.3,
     color: colors.onSurface,
+    marginBottom: 10
   },
   viewAllText: {
     fontFamily: 'Inter_600SemiBold',
@@ -909,12 +843,10 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: colors.onSurface,
   },
-
   activityCard: {
     backgroundColor: colors.surfaceContainerLowest,
     borderRadius: radii.xl,
     overflow: 'hidden',
-    marginTop: 16,
   },
   activityItem: {
     flexDirection: 'row',
