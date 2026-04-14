@@ -20,15 +20,47 @@ def _stripe_intent_for_payment(
 
         stripe.api_key = settings.STRIPE_SECRET_KEY
         amount_in_cents = int(amount * 100)
-        intent = stripe.PaymentIntent.create(
-            amount=amount_in_cents,
-            currency=currency.lower(),
-            metadata={
-                "bill_id": str(bill_id),
-                "member_id": str(member_id),
-            },
+        
+        # Log payment intent creation for debugging
+        logger.info(
+            "Creating Stripe PaymentIntent",
+            extra={
+                "bill_id": bill_id,
+                "member_id": member_id,
+                "amount": str(amount),
+                "amount_cents": amount_in_cents,
+                "currency": currency,
+            }
         )
-        return intent.id, intent.client_secret or ""
+        
+        try:
+            intent = stripe.PaymentIntent.create(
+                amount=amount_in_cents,
+                currency=currency.lower(),
+                metadata={
+                    "bill_id": str(bill_id),
+                    "member_id": str(member_id),
+                },
+            )
+            logger.info(
+                "Stripe PaymentIntent created successfully",
+                extra={"payment_intent_id": intent.id}
+            )
+            return intent.id, intent.client_secret or ""
+        except stripe.error.StripeError as e:
+            logger.error(
+                "Stripe PaymentIntent creation failed",
+                extra={
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "bill_id": bill_id,
+                    "member_id": member_id,
+                    "amount": str(amount),
+                    "currency": currency,
+                },
+                exc_info=True
+            )
+            raise ValueError(f"Payment setup failed: {str(e)}")
 
     stripe_pi_id = f"pi_mock_{uuid4().hex[:16]}"
     stripe_client_secret = f"pi_mock_{uuid4().hex[:16]}_secret_{uuid4().hex[:8]}"
@@ -43,10 +75,29 @@ class PaymentService:
         self,
         bill_id: str,
         member_id: str,
-        user_id: str,
+        user_id: str | None,
         amount: Decimal,
         currency: str = "USD",
     ) -> Payment:
+        # Validate amount
+        if amount <= 0:
+            raise ValueError("Payment amount must be greater than 0")
+        
+        # Validate currency and check Stripe minimums
+        currency_upper = currency.upper()
+        min_amounts = {
+            "USD": Decimal("0.50"),
+            "EUR": Decimal("0.50"),
+            "GBP": Decimal("0.30"),
+            "CAD": Decimal("0.50"),
+            "AUD": Decimal("0.50"),
+        }
+        
+        if currency_upper in min_amounts and amount < min_amounts[currency_upper]:
+            raise ValueError(
+                f"Payment amount must be at least {min_amounts[currency_upper]} {currency_upper}"
+            )
+        
         existing = (
             self.db.query(Payment)
             .filter(
@@ -57,9 +108,13 @@ class PaymentService:
             .first()
         )
 
-        stripe_pi_id, stripe_client_secret = _stripe_intent_for_payment(
-            bill_id, member_id, amount, currency
-        )
+        try:
+            stripe_pi_id, stripe_client_secret = _stripe_intent_for_payment(
+                bill_id, member_id, amount, currency
+            )
+        except ValueError as e:
+            # Re-raise ValueError from Stripe errors
+            raise
 
         if existing:
             existing.amount = amount
@@ -106,12 +161,29 @@ class PaymentService:
         if payment.stripe_client_secret:
             return payment
 
-        stripe_pi_id, stripe_client_secret = _stripe_intent_for_payment(
-            str(payment.bill_id),
-            str(payment.bill_member_id),
-            payment.amount,
-            payment.currency or "USD",
-        )
+        # Validate payment amount before creating Stripe intent
+        if not payment.amount or payment.amount <= 0:
+            logger.error(
+                "Invalid payment amount",
+                extra={"payment_id": payment_id, "amount": str(payment.amount)}
+            )
+            raise ValueError("Payment amount is invalid or missing")
+
+        try:
+            stripe_pi_id, stripe_client_secret = _stripe_intent_for_payment(
+                str(payment.bill_id),
+                str(payment.bill_member_id),
+                payment.amount,
+                payment.currency or "USD",
+            )
+        except ValueError as e:
+            # Re-raise with more context
+            logger.error(
+                "Failed to create Stripe PaymentIntent for payment link",
+                extra={"payment_id": payment_id, "error": str(e)}
+            )
+            raise
+            
         payment.stripe_payment_intent_id = stripe_pi_id
         payment.stripe_client_secret = stripe_client_secret
         self.db.commit()

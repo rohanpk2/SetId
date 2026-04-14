@@ -79,11 +79,32 @@ def get_public_payment(token: str, db: Session = Depends(get_db)):
 
     try:
         svc.ensure_stripe_client_for_payment(str(payment.id))
-    except ValueError:
-        return error_response("NOT_FOUND", "Payment not found", 404)
+    except ValueError as e:
+        error_msg = str(e)
+        if "NOT_FOUND" in error_msg:
+            return error_response("NOT_FOUND", "Payment not found", 404)
+        # Return specific error message from payment service
+        logger.error(
+            "Payment setup validation failed",
+            extra={"payment_id": str(payment.id), "error": error_msg}
+        )
+        return error_response(
+            "PAYMENT_SETUP_ERROR",
+            error_msg,
+            400
+        )
     except Exception as e:
         logger.exception("Stripe attach failed for public pay")
-        return error_response("PAYMENT_SETUP_ERROR", str(e), 502)
+        error_msg = str(e)
+        # Provide more specific error messages
+        if "api_key" in error_msg.lower():
+            error_msg = "Payment service configuration error. Please contact support."
+        elif "amount" in error_msg.lower():
+            error_msg = "Invalid payment amount. Please contact the bill owner."
+        else:
+            error_msg = f"Payment setup failed: {error_msg}"
+        
+        return error_response("PAYMENT_SETUP_ERROR", error_msg, 502)
 
     db.refresh(payment)
     bill = payment.bill

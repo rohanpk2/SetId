@@ -27,9 +27,11 @@ from app.api.routes import (
     invite_public,
     notifications,
     pay_public,
+    party_public,
     internal_jobs,
     virtual_cards,
     bill_ws,
+    debug,
 )
 from app.models import sms_log  # noqa: F401 — register SmsLog metadata
 
@@ -109,9 +111,13 @@ app.include_router(invites.router)
 app.include_router(invite_public.router)
 app.include_router(notifications.router)
 app.include_router(pay_public.router)
+app.include_router(party_public.router)
 app.include_router(internal_jobs.router)
 app.include_router(virtual_cards.router)
 app.include_router(bill_ws.router)
+# Debug endpoints - disable in production
+if not _is_prod:
+    app.include_router(debug.router)
 
 # Mount static files for web payment page
 app.mount("/static", StaticFiles(directory="static"), name="static")

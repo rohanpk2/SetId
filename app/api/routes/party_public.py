@@ -1,0 +1,452 @@
+"""Public guest endpoints for the web bill-splitting flow. No authentication required —
+the invite token serves as the credential."""
+
+import asyncio
+import logging
+from datetime import datetime, timezone
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Optional
+
+from fastapi import APIRouter, BackgroundTasks, Depends, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from app.core.config import settings
+from app.core.response import error_response, success_response
+from app.db.session import SessionLocal, get_db
+from app.models.bill import Bill
+from app.models.bill_member import BillMember
+from app.models.item_assignment import ItemAssignment
+from app.models.receipt_item import ReceiptItem
+from app.services.calculation_service import CalculationService
+from app.services.payment_service import PaymentService
+from app.services.ws_manager import bill_ws_manager
+
+router = APIRouter(prefix="/party", tags=["Party (public)"])
+logger = logging.getLogger(__name__)
+
+
+# ── Request schemas ──────────────────────────────────────────────
+
+class JoinRequest(BaseModel):
+    nickname: str
+
+
+class ClaimAction(BaseModel):
+    receipt_item_id: str
+    action: str  # "claim" | "unclaim"
+
+
+class ClaimRequest(BaseModel):
+    claims: list[ClaimAction]
+
+
+# ── Helpers ──────────────────────────────────────────────────────
+
+def _get_member_by_token(db: Session, token: str) -> BillMember | None:
+    return db.query(BillMember).filter(BillMember.invite_token == token).first()
+
+
+def _build_receipt_response(db: Session, bill: Bill, members: list[BillMember]) -> dict:
+    items = (
+        db.query(ReceiptItem)
+        .filter(ReceiptItem.bill_id == bill.id)
+        .order_by(ReceiptItem.sort_order)
+        .all()
+    )
+    item_ids = [item.id for item in items]
+
+    assignments = []
+    if item_ids:
+        assignments = (
+            db.query(ItemAssignment)
+            .filter(ItemAssignment.receipt_item_id.in_(item_ids))
+            .all()
+        )
+
+    member_map = {str(m.id): m.nickname for m in members}
+
+    items_out = []
+    for item in items:
+        claimed_by = []
+        for a in assignments:
+            if str(a.receipt_item_id) == str(item.id):
+                claimed_by.append({
+                    "member_id": str(a.bill_member_id),
+                    "nickname": member_map.get(str(a.bill_member_id), "Unknown"),
+                    "assignment_id": str(a.id),
+                    "share_type": a.share_type,
+                    "amount_owed": str(a.amount_owed),
+                })
+        items_out.append({
+            "id": str(item.id),
+            "name": item.name,
+            "quantity": item.quantity,
+            "unit_price": str(item.unit_price),
+            "total_price": str(item.total_price),
+            "claimed_by": claimed_by,
+        })
+
+    return {
+        "bill": {
+            "id": str(bill.id),
+            "title": bill.title,
+            "merchant_name": bill.merchant_name,
+            "currency": bill.currency or "USD",
+            "subtotal": str(bill.subtotal or 0),
+            "tax": str(bill.tax or 0),
+            "tip": str(bill.tip or 0),
+            "total": str(bill.total or 0),
+        },
+        "members": [
+            {"id": str(m.id), "nickname": m.nickname, "status": m.status}
+            for m in members
+        ],
+        "items": items_out,
+    }
+
+
+def _broadcast_assignments(bill_id: str) -> None:
+    if bill_ws_manager.client_count(bill_id) == 0:
+        return
+    db = SessionLocal()
+    try:
+        from app.schemas.item_assignment import AssignmentOut
+
+        svc = CalculationService(db)
+        assignments = svc.get_assignments(bill_id)
+        payload = []
+        for a in assignments:
+            a.item_name = a.item.name if a.item else None
+            a.member_nickname = a.member.nickname if a.member else None
+            payload.append(AssignmentOut.model_validate(a).model_dump())
+        loop = asyncio.get_event_loop()
+        loop.create_task(bill_ws_manager.broadcast(bill_id, "assignment_update", payload))
+    except Exception:
+        logger.exception("WS broadcast failed for bill %s", bill_id)
+    finally:
+        db.close()
+
+
+def _broadcast_event(bill_id: str, event: str, data: dict) -> None:
+    if bill_ws_manager.client_count(bill_id) == 0:
+        return
+    try:
+        loop = asyncio.get_event_loop()
+        loop.create_task(bill_ws_manager.broadcast(bill_id, event, data))
+    except Exception:
+        logger.exception("WS broadcast failed for bill %s", bill_id)
+
+
+def _recalculate_equal_splits_for_item(db: Session, item: ReceiptItem) -> None:
+    equal_assignments = (
+        db.query(ItemAssignment)
+        .filter(
+            ItemAssignment.receipt_item_id == item.id,
+            ItemAssignment.share_type == "equal",
+        )
+        .all()
+    )
+    if not equal_assignments:
+        return
+    per_person = (item.total_price / len(equal_assignments)).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+    for a in equal_assignments:
+        a.amount_owed = per_person
+
+
+# ── Endpoints ────────────────────────────────────────────────────
+
+@router.post("/{token}/join")
+def join_party(token: str, body: JoinRequest, db: Session = Depends(get_db)):
+    member = _get_member_by_token(db, token)
+    if not member:
+        return error_response("NOT_FOUND", "Invalid or expired invite link.", 404)
+
+    bill = member.bill
+    if not bill:
+        return error_response("NOT_FOUND", "Bill not found.", 404)
+
+    if member.status == "joined":
+        members = db.query(BillMember).filter(BillMember.bill_id == bill.id).all()
+        return success_response(data={
+            "member_id": str(member.id),
+            "nickname": member.nickname,
+            "bill_id": str(bill.id),
+            "bill_title": bill.title,
+            "merchant_name": bill.merchant_name,
+            "member_count": len(members),
+        }, message="Already joined")
+
+    member.nickname = body.nickname
+    member.status = "joined"
+    member.joined_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(member)
+
+    members = db.query(BillMember).filter(BillMember.bill_id == bill.id).all()
+
+    _broadcast_event(str(bill.id), "member_joined", {
+        "member_id": str(member.id),
+        "nickname": member.nickname,
+    })
+
+    return success_response(data={
+        "member_id": str(member.id),
+        "nickname": member.nickname,
+        "bill_id": str(bill.id),
+        "bill_title": bill.title,
+        "merchant_name": bill.merchant_name,
+        "member_count": len(members),
+    }, message="Joined successfully")
+
+
+@router.get("/{token}/receipt")
+def get_receipt(token: str, db: Session = Depends(get_db)):
+    member = _get_member_by_token(db, token)
+    if not member:
+        return error_response("NOT_FOUND", "Invalid or expired invite link.", 404)
+
+    if member.status not in ("joined", "invite_link"):
+        return error_response("BAD_REQUEST", "You must join the bill first.", 400)
+
+    bill = member.bill
+    if not bill:
+        return error_response("NOT_FOUND", "Bill not found.", 404)
+
+    members = db.query(BillMember).filter(BillMember.bill_id == bill.id).all()
+    return success_response(data=_build_receipt_response(db, bill, members))
+
+
+@router.post("/{token}/claim")
+def claim_items(
+    token: str,
+    body: ClaimRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    member = _get_member_by_token(db, token)
+    if not member:
+        return error_response("NOT_FOUND", "Invalid or expired invite link.", 404)
+
+    if member.status != "joined":
+        return error_response("BAD_REQUEST", "You must join the bill first.", 400)
+
+    bill = member.bill
+    if not bill:
+        return error_response("NOT_FOUND", "Bill not found.", 404)
+
+    bill_id_str = str(bill.id)
+    member_id_str = str(member.id)
+
+    affected_item_ids: set[str] = set()
+
+    for claim in body.claims:
+        item = (
+            db.query(ReceiptItem)
+            .filter(ReceiptItem.id == claim.receipt_item_id, ReceiptItem.bill_id == bill.id)
+            .first()
+        )
+        if not item:
+            return error_response("NOT_FOUND", f"Item {claim.receipt_item_id} not found.", 404)
+
+        if claim.action == "claim":
+            existing = (
+                db.query(ItemAssignment)
+                .filter(
+                    ItemAssignment.receipt_item_id == item.id,
+                    ItemAssignment.bill_member_id == member.id,
+                )
+                .first()
+            )
+            if not existing:
+                assignment = ItemAssignment(
+                    receipt_item_id=item.id,
+                    bill_member_id=member.id,
+                    share_type="equal",
+                    share_value=Decimal("0"),
+                    amount_owed=Decimal("0"),
+                )
+                db.add(assignment)
+                db.flush()
+                affected_item_ids.add(str(item.id))
+
+        elif claim.action == "unclaim":
+            existing = (
+                db.query(ItemAssignment)
+                .filter(
+                    ItemAssignment.receipt_item_id == item.id,
+                    ItemAssignment.bill_member_id == member.id,
+                )
+                .first()
+            )
+            if existing:
+                db.delete(existing)
+                db.flush()
+                affected_item_ids.add(str(item.id))
+
+    for item_id in affected_item_ids:
+        item = db.query(ReceiptItem).filter(ReceiptItem.id == item_id).first()
+        if item:
+            _recalculate_equal_splits_for_item(db, item)
+
+    db.commit()
+
+    background_tasks.add_task(_broadcast_assignments, bill_id_str)
+
+    members = db.query(BillMember).filter(BillMember.bill_id == bill.id).all()
+    return success_response(
+        data=_build_receipt_response(db, bill, members),
+        message="Items updated",
+    )
+
+
+@router.post("/{token}/confirm")
+def confirm_and_pay(token: str, db: Session = Depends(get_db)):
+    member = _get_member_by_token(db, token)
+    if not member:
+        return error_response("NOT_FOUND", "Invalid or expired invite link.", 404)
+
+    if member.status != "joined":
+        return error_response("BAD_REQUEST", "You must join the bill first.", 400)
+
+    bill = member.bill
+    if not bill:
+        return error_response("NOT_FOUND", "Bill not found.", 404)
+
+    calc_svc = CalculationService(db)
+    breakdown = calc_svc.get_balance_breakdown(str(bill.id))
+
+    member_breakdown = None
+    for mb in breakdown["members"]:
+        if mb["member_id"] == str(member.id):
+            member_breakdown = mb
+            break
+
+    if not member_breakdown:
+        return error_response("NOT_FOUND", "Member balance not found.", 404)
+
+    total_owed = member_breakdown["remaining"]
+    if total_owed <= 0:
+        return error_response("BAD_REQUEST", "Nothing to pay.", 400)
+
+    currency = (bill.currency or "USD").upper()
+    min_amounts = {
+        "USD": Decimal("0.50"), "EUR": Decimal("0.50"),
+        "GBP": Decimal("0.30"), "CAD": Decimal("0.50"), "AUD": Decimal("0.50"),
+    }
+    min_amt = min_amounts.get(currency, Decimal("0.50"))
+    if total_owed < min_amt:
+        return error_response(
+            "BAD_REQUEST",
+            f"Amount {total_owed} {currency} is below the minimum charge of {min_amt} {currency}.",
+            400,
+        )
+
+    pay_svc = PaymentService(db)
+    try:
+        payment = pay_svc.create_payment_intent(
+            bill_id=str(bill.id),
+            member_id=str(member.id),
+            user_id=None,
+            amount=total_owed,
+            currency=currency,
+        )
+    except ValueError as e:
+        return error_response("PAYMENT_ERROR", str(e), 400)
+
+    return success_response(data={
+        "payment_id": str(payment.id),
+        "amount": str(payment.amount),
+        "currency": payment.currency,
+        "stripe_client_secret": payment.stripe_client_secret,
+        "stripe_publishable_key": settings.STRIPE_PUBLISHABLE_KEY,
+        "breakdown": {
+            "subtotal": str(member_breakdown["subtotal"]),
+            "tax_share": str(member_breakdown["tax_share"]),
+            "tip_share": str(member_breakdown["tip_share"]),
+            "fee_share": str(member_breakdown["fee_share"]),
+            "total_owed": str(total_owed),
+        },
+    })
+
+
+@router.post("/{token}/payment-complete")
+def payment_complete(
+    token: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    member = _get_member_by_token(db, token)
+    if not member:
+        return error_response("NOT_FOUND", "Invalid or expired invite link.", 404)
+
+    from app.models.payment import Payment
+
+    payment = (
+        db.query(Payment)
+        .filter(
+            Payment.bill_member_id == member.id,
+            Payment.status == "pending",
+        )
+        .order_by(Payment.created_at.desc())
+        .first()
+    )
+    if not payment:
+        return error_response("NOT_FOUND", "No pending payment found.", 404)
+
+    if settings.STRIPE_SECRET_KEY and payment.stripe_payment_intent_id:
+        import stripe
+        stripe.api_key = settings.STRIPE_SECRET_KEY
+        try:
+            pi = stripe.PaymentIntent.retrieve(payment.stripe_payment_intent_id)
+            if pi.status != "succeeded":
+                return error_response(
+                    "PAYMENT_NOT_CONFIRMED",
+                    f"Stripe payment status is '{pi.status}', not 'succeeded'.",
+                    400,
+                )
+        except Exception as e:
+            logger.error("Stripe verification failed: %s", e)
+            return error_response("PAYMENT_ERROR", "Could not verify payment with Stripe.", 500)
+
+    pay_svc = PaymentService(db)
+    pay_svc.confirm_payment(str(payment.id))
+
+    bill_id_str = str(member.bill_id)
+    background_tasks.add_task(
+        lambda: _broadcast_event(bill_id_str, "payment_complete", {
+            "member_id": str(member.id),
+            "nickname": member.nickname,
+        })
+    )
+
+    return success_response(data={
+        "payment_id": str(payment.id),
+        "status": "succeeded",
+    }, message="Payment confirmed")
+
+
+# ── WebSocket ────────────────────────────────────────────────────
+
+@router.websocket("/{token}/ws")
+async def party_websocket(token: str, websocket: WebSocket):
+    db = SessionLocal()
+    try:
+        member = _get_member_by_token(db, token)
+        if not member:
+            await websocket.close(code=4001, reason="Invalid token")
+            return
+        bill_id = str(member.bill_id)
+    finally:
+        db.close()
+
+    await bill_ws_manager.connect(bill_id, websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        bill_ws_manager.disconnect(bill_id, websocket)

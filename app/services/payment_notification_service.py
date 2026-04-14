@@ -64,6 +64,31 @@ class PaymentNotificationService:
             remaining = Decimal(str(m["remaining"]))
             if remaining <= 0:
                 continue
+            
+            # Skip if amount is below Stripe minimum (prevents payment failures)
+            currency = (bill.currency or "USD").upper()
+            min_amounts = {
+                "USD": Decimal("0.50"),
+                "EUR": Decimal("0.50"),
+                "GBP": Decimal("0.30"),
+                "CAD": Decimal("0.50"),
+                "AUD": Decimal("0.50"),
+            }
+            
+            min_amount = min_amounts.get(currency, Decimal("0.50"))
+            if remaining < min_amount:
+                skipped += 1
+                logger.info(
+                    "Skip SMS: member %s amount %s %s is below minimum %s",
+                    m["member_id"],
+                    remaining,
+                    currency,
+                    min_amount
+                )
+                errors.append(
+                    f"{m.get('nickname', 'Unknown')}: Amount ${remaining} is below minimum ${min_amount} {currency}"
+                )
+                continue
 
             member = (
                 self.db.query(BillMember)
