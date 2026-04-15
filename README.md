@@ -468,7 +468,7 @@ const getDashboard = async (token) => {
 
 5. **Equal split rounding.** Uses `ROUND_HALF_UP` via Python's `Decimal`. The last-penny problem is not explicitly handled — consider adding a reconciliation pass if precision is critical.
 
-6. **File uploads** are stored at `{UPLOAD_DIR}/{bill_id}/{filename}`. To swap to S3 or Supabase Storage, replace the `save_upload` method in `ReceiptParserService` with a boto3/supabase-py call and store the returned URL in `file_path`.
+6. **File uploads** are stored at `{UPLOAD_DIR}/{bill_id}/{filename}`. For production object storage (S3, GCS, etc.), replace the `save_upload` method in `ReceiptParserService` with your provider’s SDK and store the returned URL in `file_path`.
 
 7. **No ownership checks on mutations.** Any authenticated user can currently update any bill. Add `bill.owner_id == current_user.id` guards in route handlers before shipping to production.
 

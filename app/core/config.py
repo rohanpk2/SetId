@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "WealthSplit"
 
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/wealthsplit"
+    # Optional alternate DB URL (e.g. hosted Postgres). When set, `effective_database_url` prefers this.
+    DATABASE_URL_PROD: str | None = None
     DIRECT_DATABASE_URL: str | None = None  # For migrations (bypasses connection pooling)
 
     JWT_SECRET_KEY: str = "dev-secret-change-me"
@@ -87,6 +89,13 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @property
+    def effective_database_url(self) -> str:
+        """Prefer DATABASE_URL_PROD when set (e.g. hosted Postgres), else DATABASE_URL."""
+        if self.DATABASE_URL_PROD:
+            return self.DATABASE_URL_PROD
+        return self.DATABASE_URL
 
 
 settings = Settings()

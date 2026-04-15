@@ -1,3 +1,5 @@
+import uuid
+
 from sqlalchemy.orm import Session
 
 from app.core.security import create_access_token, hash_password, verify_password
@@ -10,6 +12,11 @@ from app.utils.phone import normalize_to_e164
 def _synthetic_email_from_phone(e164: str) -> str:
     digits = "".join(c for c in e164 if c.isdigit())
     return f"{digits}@phone.users.spltr"
+
+
+def _subject_uuid_from_phone(e164: str) -> uuid.UUID:
+    # Deterministic subject for onboarding tokens before a DB row exists.
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"spltr-phone:{e164}")
 
 
 class AuthService:
@@ -127,46 +134,13 @@ class AuthService:
         if intent == "login" and u is None:
             raise ValueError("PHONE_NOT_REGISTERED")
 
-    def _create_phone_user(self, phone_e164: str, label: str) -> User:
-        email = _synthetic_email_from_phone(phone_e164)
-        if self.db.query(User).filter(User.email == email).first():
-            raise ValueError("EMAIL_CONFLICT")
-
-        user = User(
-            email=email,
-            password_hash=None,
-            full_name=label or "Member",
-            phone=phone_e164,
-            auth_provider="phone",
-        )
-        self.db.add(user)
-        self.db.commit()
-        self.db.refresh(user)
-        return user
-
-    def get_or_create_user_for_phone(self, phone_e164: str, display_name: str) -> User:
-        """Legacy flexible path: create if missing, else update optional display name."""
-        trimmed = (display_name or "").strip()
-
-        user = self.user_by_phone(phone_e164)
-        if user:
-            if not user.is_active:
-                raise ValueError("ACCOUNT_DISABLED")
-            if trimmed:
-                user.full_name = trimmed
-            self.db.commit()
-            self.db.refresh(user)
-            return user
-
-        return self._create_phone_user(phone_e164, trimmed or "Member")
-
     def complete_phone_otp(
         self,
         phone_raw: str,
         code: str,
         first_name: str,
         intent: str | None = None,
-    ) -> tuple[User, str]:
+    ) -> tuple[User | None, str, bool]:
         try:
             phone_e164 = normalize_to_e164(phone_raw)
         except ValueError as e:
@@ -183,9 +157,10 @@ class AuthService:
             raise ValueError("OTP_EXPIRED")
 
         display = (first_name or "").strip()
+        existing = self.user_by_phone(phone_e164)
 
         if intent == "login":
-            user = self.user_by_phone(phone_e164)
+            user = existing
             if not user:
                 raise ValueError("PHONE_NOT_REGISTERED")
             if not user.is_active:
@@ -195,17 +170,29 @@ class AuthService:
                 self.db.commit()
                 self.db.refresh(user)
             token = create_access_token(str(user.id))
-            return user, token
+            return user, token, False
 
         if intent == "signup":
-            if self.user_by_phone(phone_e164):
+            if existing:
                 raise ValueError("PHONE_ALREADY_REGISTERED")
             if not display:
                 raise ValueError("NAME_REQUIRED")
-            user = self._create_phone_user(phone_e164, display)
-            token = create_access_token(str(user.id))
-            return user, token
+            subject = _subject_uuid_from_phone(phone_e164)
+            token = create_access_token(
+                str(subject),
+                extra_claims={
+                    "phone": phone_e164,
+                    "auth_stage": "onboarding",
+                    "auth_method": "twilio_verify",
+                    "preferred_name": display,
+                },
+            )
+            return None, token, True
 
-        user = self.get_or_create_user_for_phone(phone_e164, display)
-        token = create_access_token(str(user.id))
-        return user, token
+        # Backward-compatible default: treat as login-only when intent is omitted.
+        if not existing:
+            raise ValueError("PHONE_NOT_REGISTERED")
+        if not existing.is_active:
+            raise ValueError("ACCOUNT_DISABLED")
+        token = create_access_token(str(existing.id))
+        return existing, token, False

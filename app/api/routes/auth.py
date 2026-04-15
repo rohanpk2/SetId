@@ -1,9 +1,10 @@
 import logging
+import uuid
 
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_token_payload
 from app.db.session import get_db
 from app.models.user import User
 from app.core.response import success_response, error_response
@@ -16,6 +17,7 @@ from app.schemas.auth import (
     SendOtpRequest,
     VerifyOtpRequest,
     PhoneAuthData,
+    CreateProfileRequest,
 )
 from app.services.auth_service import AuthService
 from app.services.otp_service import (
@@ -32,39 +34,21 @@ logger = logging.getLogger(__name__)
 
 
 @router.post("/signup")
-def signup(body: SignupRequest, db: Session = Depends(get_db)):
-    svc = AuthService(db)
-    try:
-        user, token = svc.signup(
-            email=body.email,
-            password=body.password,
-            full_name=body.full_name,
-        )
-    except ValueError:
-        return error_response("EMAIL_EXISTS", "A user with this email already exists", 409)
-
-    auth_data = AuthResponse(
-        access_token=token,
-        token_type="bearer",
-        user=UserBrief.model_validate(user),
+def signup(body: SignupRequest):
+    return error_response(
+        "UNSUPPORTED_AUTH_FLOW",
+        "Email/password signup is disabled. Use phone OTP via Twilio Verify.",
+        410,
     )
-    return success_response(data=auth_data.model_dump(), message="Account created successfully")
 
 
 @router.post("/login")
-def login(body: LoginRequest, db: Session = Depends(get_db)):
-    svc = AuthService(db)
-    try:
-        user, token = svc.login(email=body.email, password=body.password)
-    except ValueError:
-        return error_response("INVALID_CREDENTIALS", "Invalid email or password", 401)
-
-    auth_data = AuthResponse(
-        access_token=token,
-        token_type="bearer",
-        user=UserBrief.model_validate(user),
+def login(body: LoginRequest):
+    return error_response(
+        "UNSUPPORTED_AUTH_FLOW",
+        "Email/password login is disabled. Use phone OTP via Twilio Verify.",
+        410,
     )
-    return success_response(data=auth_data.model_dump(), message="Login successful")
 
 
 @router.get("/me")
@@ -74,8 +58,64 @@ def get_me(current_user: User = Depends(get_current_user)):
 
 
 @router.post("/logout")
-def logout(current_user: User = Depends(get_current_user)):
+def logout(_payload: dict = Depends(get_token_payload)):
     return success_response(message="Logged out successfully")
+
+
+@router.post("/create-profile")
+def create_profile(
+    body: CreateProfileRequest,
+    payload: dict = Depends(get_token_payload),
+    db: Session = Depends(get_db),
+):
+    sub = payload.get("sub")
+    try:
+        user_id = uuid.UUID(str(sub))
+    except (TypeError, ValueError):
+        return error_response("INVALID_TOKEN", "Invalid token subject", 401)
+
+    existing = db.query(User).filter(User.id == user_id).first()
+    if existing:
+        return success_response(
+            data=UserBrief.model_validate(existing).model_dump(),
+            message="Profile already exists",
+        )
+
+    raw_phone = payload.get("phone")
+    phone_e164 = None
+    if isinstance(raw_phone, str) and raw_phone.strip():
+        try:
+            phone_e164 = normalize_to_e164(raw_phone)
+        except ValueError:
+            phone_e164 = None
+
+    if phone_e164:
+        by_phone = db.query(User).filter(User.phone == phone_e164).first()
+        if by_phone:
+            return success_response(
+                data=UserBrief.model_validate(by_phone).model_dump(),
+                message="Profile already exists",
+            )
+
+    email = payload.get("email")
+    if not isinstance(email, str) or not email.strip():
+        email = f"{''.join(c for c in (phone_e164 or str(user_id)) if c.isdigit())}@phone.users.spltr"
+
+    user = User(
+        id=user_id,
+        email=email,
+        full_name=body.full_name.strip(),
+        phone=phone_e164,
+        auth_provider="phone",
+        password_hash=None,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return success_response(
+        data=UserBrief.model_validate(user).model_dump(),
+        message="Profile created",
+    )
 
 
 @router.post("/send-otp")
@@ -150,7 +190,7 @@ def verify_otp_phone(request: Request, body: VerifyOtpRequest, db: Session = Dep
     """Verify OTP and return JWT + user (signup creates user; login requires existing phone)."""
     svc = AuthService(db)
     try:
-        user, token = svc.complete_phone_otp(
+        user, token, needs_profile = svc.complete_phone_otp(
             body.phone, body.code, body.first_name, body.intent
         )
     except OtpProviderError as e:
@@ -198,7 +238,7 @@ def verify_otp_phone(request: Request, body: VerifyOtpRequest, db: Session = Dep
 
     logger.info(
         "auth.verify_otp ok user_id=%s phone_tail=%s ip=%s",
-        user.id,
+        user.id if user else "pending-profile",
         (body.phone or "")[-4:] if len(body.phone or "") >= 4 else "****",
         request.client.host if request.client else None,
     )
@@ -206,27 +246,16 @@ def verify_otp_phone(request: Request, body: VerifyOtpRequest, db: Session = Dep
     auth = PhoneAuthData(
         token=token,
         access_token=token,
-        user=UserBrief.model_validate(user),
+        user=UserBrief.model_validate(user) if user else None,
+        needs_profile=needs_profile,
     )
     return success_response(data=auth.model_dump(mode="json"), message="Signed in successfully")
 
 
 @router.post("/apple")
-async def apple_signin(body: AppleSignInRequest, db: Session = Depends(get_db)):
-    """Sign in with Apple"""
-    svc = AuthService(db)
-    try:
-        user, token = await svc.apple_signin(
-            identity_token=body.identity_token,
-            authorization_code=body.authorization_code,
-            user_info=body.user_info
-        )
-    except ValueError as e:
-        return error_response("APPLE_AUTH_FAILED", str(e), 401)
-
-    auth_data = AuthResponse(
-        access_token=token,
-        token_type="bearer",
-        user=UserBrief.model_validate(user),
+async def apple_signin(body: AppleSignInRequest):
+    return error_response(
+        "UNSUPPORTED_AUTH_FLOW",
+        "Apple Sign-In is disabled for this deployment.",
+        410,
     )
-    return success_response(data=auth_data.model_dump(), message="Apple Sign In successful")

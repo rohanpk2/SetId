@@ -58,12 +58,17 @@ class VerifyOtpRequest(BaseModel):
         return str(v).strip()
 
 
+class CreateProfileRequest(BaseModel):
+    full_name: str = Field(min_length=1, max_length=255)
+
+
 class PhoneAuthData(BaseModel):
     """Tokens + user for phone OTP completion."""
 
     token: str
     access_token: str
-    user: UserBrief
+    user: UserBrief | None = None
+    needs_profile: bool = False
 
 
 class AppleSignInRequest(BaseModel):

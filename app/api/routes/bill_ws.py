@@ -29,7 +29,8 @@ async def bill_websocket(
     bill_id: str,
     token: str = Query(...),
 ):
-    user_id = decode_access_token(token)
+    payload = decode_access_token(token)
+    user_id = payload.get("sub") if payload else None
     if not user_id:
         await websocket.close(code=4001, reason="Invalid or expired token")
         return

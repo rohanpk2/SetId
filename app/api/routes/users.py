@@ -60,7 +60,11 @@ def invite_user(
     body: InviteRequest,
     current_user: User = Depends(get_current_user),
 ):
-    return success_response(message=f"Invite sent to {body.email}")
+    return error_response(
+        "NOT_IMPLEMENTED",
+        "Email invites are not enabled yet.",
+        501,
+    )
 
 
 @router.get("/{user_id}")

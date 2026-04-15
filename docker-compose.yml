@@ -21,9 +21,10 @@ services:
       - "8000:8000"
     env_file:
       - .env
-    # Override: inside the container, Postgres is the `db` service — not localhost.
+    # Interpolation uses the project `.env` file. Prefer DATABASE_URL_PROD, then
+    # DATABASE_URL from that file, then the local compose `db` service.
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/wealthsplit
+      DATABASE_URL: ${DATABASE_URL_PROD:-${DATABASE_URL:-postgresql://postgres:postgres@db:5432/wealthsplit}}
     depends_on:
       db:
         condition: service_healthy

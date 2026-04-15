@@ -111,8 +111,10 @@ class TestBillWSEndpoint:
         from fastapi.testclient import TestClient
         from app.main import app
 
-        with patch("app.api.routes.bill_ws.decode_access_token", return_value="user-1"), \
-             patch("app.api.routes.bill_ws.SessionLocal") as MockSession:
+        with patch(
+            "app.api.routes.bill_ws.decode_access_token",
+            return_value={"sub": "user-1"},
+        ), patch("app.api.routes.bill_ws.SessionLocal") as MockSession:
             db = MagicMock()
             user = MagicMock()
             user.id = "user-1"
@@ -129,8 +131,10 @@ class TestBillWSEndpoint:
         from fastapi.testclient import TestClient
         from app.main import app
 
-        with patch("app.api.routes.bill_ws.decode_access_token", return_value="user-1"), \
-             patch("app.api.routes.bill_ws.SessionLocal") as MockSession, \
+        with patch(
+            "app.api.routes.bill_ws.decode_access_token",
+            return_value={"sub": "user-1"},
+        ), patch("app.api.routes.bill_ws.SessionLocal") as MockSession, \
              patch("app.api.routes.bill_ws.require_bill_participant"):
             db = MagicMock()
             user = MagicMock()
