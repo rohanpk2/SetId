@@ -520,10 +520,22 @@ export default function BillSplitScreen({ navigation, route }) {
     },
     onPaymentComplete: () => {
       console.log('[WS] Payment complete, fetching...');
+      if (__DEV__) console.log('[WS] Connected to bill', billId);
+    },
+    onAssignmentUpdate: (data) => {
+      if (__DEV__) console.log('[WS] assignment_update received', data?.length, 'assignments');
+      fetchSummary();
+    },
+    onMemberJoined: (data) => {
+      if (__DEV__) console.log('[WS] member_joined:', data?.nickname);
+      fetchSummary();
+    },
+    onPaymentComplete: (data) => {
+      if (__DEV__) console.log('[WS] payment_complete:', data?.nickname);
       fetchSummary();
     },
     onAuthError: (code) => {
-      console.warn('[WS] Auth error, code:', code);
+      if (__DEV__) console.warn('[WS] Auth error, code:', code);
     },
   }), [billId, fetchSummary]);
 
@@ -545,6 +557,25 @@ export default function BillSplitScreen({ navigation, route }) {
     setAssignmentMap((prev) => {
       const list = prev[itemId] || [];
       return {
+    mutatingAssignment.current = true;
+    try {
+      if (has) {
+        const assignId = serverAssignmentIds.current[`${itemId}::${memberId}`];
+        if (assignId) {
+          await assignmentsApi.delete(billId, assignId);
+          delete serverAssignmentIds.current[`${itemId}::${memberId}`];
+        }
+      } else {
+        await assignmentsApi.create(billId, [
+          { receipt_item_id: itemId, bill_member_id: memberId, share_type: 'equal', share_value: 0 },
+        ]);
+      }
+      // Refresh from server to get accurate IDs and recalculated amounts
+      await fetchSummary(true);
+    } catch (err) {
+      if (__DEV__) console.warn('Assignment toggle failed, reverting:', err);
+      // Revert optimistic update on failure
+      setAssignmentMap((prev) => ({
         ...prev,
         [itemId]: has
           ? list.filter((id) => id !== memberId)

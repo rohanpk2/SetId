@@ -1,8 +1,8 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { AppState } from 'react-native';
 import { getToken } from '../services/authStorage';
+import { getWebSocketBaseUrl } from '../services/api';
 
-const WS_BASE = 'wss://api.settld.live';
 const MAX_RECONNECT_DELAY = 30000;
 
 export default function useBillWebSocket(billId, handlers = {}) {
@@ -35,6 +35,8 @@ export default function useBillWebSocket(billId, handlers = {}) {
 
       const url = `${WS_BASE}/bills/${billId}/ws?token=${token}`;
       console.log(`[WS] Connecting to: ${url.replace(/token=[^&]*/, 'token=***')}`);
+      const wsBase = getWebSocketBaseUrl();
+      const url = `${wsBase}/bills/${billId}/ws?token=${encodeURIComponent(token)}`;
       const socket = new WebSocket(url);
 
       socket.onopen = () => {
