@@ -4,6 +4,12 @@ import { getToken } from '../services/authStorage';
 import { getWebSocketBaseUrl } from '../services/api';
 
 const MAX_RECONNECT_DELAY = 30000;
+// Mobile carriers and consumer NATs silently drop idle TCP flows after 60–120s.
+// RN's WebSocket doesn't notice a half-dead socket — readyState stays OPEN
+// forever. We detect this at the app layer by tracking the last inbound frame
+// and forcing a reconnect when the server has been silent too long.
+const PING_INTERVAL_MS = 20000;
+const LIVENESS_TIMEOUT_MS = 45000;
 
 export default function useBillWebSocket(billId, handlers = {}) {
   const ws = useRef(null);
@@ -11,6 +17,7 @@ export default function useBillWebSocket(billId, handlers = {}) {
   const reconnectTimer = useRef(null);
   const isMounted = useRef(true);
   const pingTimer = useRef(null);
+  const lastFrameAt = useRef(0);
   const [connected, setConnected] = useState(false);
 
   const handlersRef = useRef(handlers);
@@ -45,18 +52,33 @@ export default function useBillWebSocket(billId, handlers = {}) {
         }
         console.log(`[WS] Socket opened successfully for bill ${billId}`);
         reconnectAttempt.current = 0;
+        lastFrameAt.current = Date.now();
         setConnected(true);
         handlersRef.current.onConnected?.();
 
         clearInterval(pingTimer.current);
         pingTimer.current = setInterval(() => {
-          if (socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ type: 'ping' }));
+          if (socket.readyState !== WebSocket.OPEN) return;
+
+          const silentMs = Date.now() - lastFrameAt.current;
+          if (silentMs > LIVENESS_TIMEOUT_MS) {
+            console.warn(
+              `[WS] No traffic for ${silentMs}ms on bill ${billId} — forcing reconnect`,
+            );
+            try {
+              socket.close(4000, 'liveness timeout');
+            } catch {}
+            return;
           }
-        }, 30000);
+
+          try {
+            socket.send(JSON.stringify({ type: 'ping' }));
+          } catch {}
+        }, PING_INTERVAL_MS);
       };
 
       socket.onmessage = (event) => {
+        lastFrameAt.current = Date.now();
         try {
           const msg = JSON.parse(event.data);
           // Backend envelope key is `type` (as of the ws_manager refactor).

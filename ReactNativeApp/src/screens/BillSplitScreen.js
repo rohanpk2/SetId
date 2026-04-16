@@ -465,8 +465,10 @@ export default function BillSplitScreen({ navigation, route }) {
         assignmentsApi.list(billId),
       ]);
 
-      // Another mutation started while we were fetching — discard this snapshot.
-      if (inFlightMutationsRef.current > 0) return;
+      // Another mutation started while we were fetching — discard this snapshot
+      // UNLESS this was a forced refresh (WebSocket event, focus, resume). Those
+      // are authoritative server-originated signals that must not be dropped.
+      if (!force && inFlightMutationsRef.current > 0) return;
 
       const data = summaryRes.data;
       setMembers(data.members ?? []);
@@ -535,10 +537,14 @@ export default function BillSplitScreen({ navigation, route }) {
   const { connected: wsConnected } = useBillWebSocket(billId, wsHandlers);
 
   // Real-time comes from the WebSocket. Poll only as a safety net when the
-  // socket is disconnected (e.g. flaky network).
+  // socket is disconnected (e.g. flaky network / carrier NAT timeout). Keep
+  // the interval tight (2s) so the UI catches up quickly once the WS dies —
+  // the hook now force-reconnects a half-dead socket within ~45s, but during
+  // that window polling is our only lifeline. We intentionally don't pass
+  // force=true here so mid-tap optimistic UI is still protected.
   useEffect(() => {
     if (wsConnected) return;
-    const poll = setInterval(() => fetchSummary(), 5000);
+    const poll = setInterval(() => fetchSummary(), 2000);
     return () => clearInterval(poll);
   }, [wsConnected, fetchSummary]);
 

@@ -280,10 +280,12 @@ export default function ReviewPaymentScreen({ navigation, route }) {
 
   const { connected: wsConnected } = useBillWebSocket(billId, wsHandlers);
 
-  // Fallback polling only when WebSocket is disconnected
+  // Fallback polling only when WebSocket is disconnected. 2s keeps the
+  // payment-collection UI reactive for the host while a half-dead socket
+  // is being torn down by the liveness check in useBillWebSocket.
   useEffect(() => {
     if (wsConnected) return;
-    const poll = setInterval(() => load(true), 5000);
+    const poll = setInterval(() => load(true), 2000);
     return () => clearInterval(poll);
   }, [wsConnected, load]);
 
