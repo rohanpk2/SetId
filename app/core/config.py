@@ -84,6 +84,13 @@ class Settings(BaseSettings):
     # Set to "production" to enable prod safety checks (secret validation, docs disabled)
     ENVIRONMENT: str = "development"
 
+    # Async receipt parse (Celery). If unset, FastAPI BackgroundTasks runs the worker in-process.
+    CELERY_BROKER_URL: str | None = None
+    CELERY_RESULT_BACKEND: str | None = None
+
+    # Optional LLM pass for item-name normalization (dictionary always runs first).
+    RECEIPT_NORMALIZE_USE_LLM: bool = False
+
     model_config = SettingsConfigDict(
         env_file=str(_ENV_FILE),
         env_file_encoding="utf-8",

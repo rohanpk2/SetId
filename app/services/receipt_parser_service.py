@@ -3,6 +3,7 @@ import json
 import mimetypes
 import os
 import re
+import uuid
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
@@ -12,11 +13,16 @@ from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.receipt_pipeline import RECEIPT_PIPELINE_VERSION
 from app.models.bill import Bill
 from app.models.item_assignment import ItemAssignment
 from app.models.receipt import ReceiptUpload
 from app.models.receipt_item import ReceiptItem
 from app.schemas.receipt import ParsedReceipt, ParsedReceiptItem
+from app.services.receipt_feedback_service import record_item_edit_feedback
+from app.services.receipt_item_normalizer import normalize_cleanup_payload
+from app.services.receipt_preparser import parse_structured_rows
+from app.services.receipt_validator import validate_parsed_receipt
 
 MONEY_QUANTIZE = Decimal("0.01")
 NON_ITEM_PATTERNS = (
@@ -45,23 +51,74 @@ DATE_TIME_PATTERN = re.compile(
 )
 
 OCR_PROMPT = """
-You are an OCR engine for receipt images.
-Transcribe the visible text exactly as it appears, preserving line breaks and approximate reading order.
-Do not summarize, correct, interpret, or structure the text.
-Return only the raw receipt text with no markdown fences or commentary.
+You are a layout-aware OCR engine for receipt images.
+Return strict JSON only with this shape:
+{
+  "lines": [
+    {
+      "text": "BURGER",
+      "bounding_box": { "x": 0.1, "y": 0.3, "w": 0.4, "h": 0.05 }
+    }
+  ]
+}
+Rules:
+- Preserve reading order from top-to-bottom and left-to-right.
+- Include every visible text line.
+- bounding_box values must be normalized floats in [0, 1].
+- Do not add markdown fences, prose, or extra keys.
 """.strip()
 
+OCR_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "receipt_layout_ocr",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "lines": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string"},
+                            "bounding_box": {
+                                "type": "object",
+                                "properties": {
+                                    "x": {"type": "number"},
+                                    "y": {"type": "number"},
+                                    "w": {"type": "number"},
+                                    "h": {"type": "number"},
+                                },
+                                "required": ["x", "y", "w", "h"],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "required": ["text", "bounding_box"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+            "required": ["lines"],
+            "additionalProperties": False,
+        },
+    },
+}
+
 CLEANUP_SYSTEM_PROMPT = """
-You clean noisy OCR text from retail and restaurant receipts.
-Return strict JSON only.
-Extract purchased line items only and ignore addresses, dates, timestamps, payment method lines,
-card digits, approval codes, batch numbers, trace numbers, and other transaction metadata.
-For each item, output:
-- name
-- quantity
-- price (the full line-item amount to split, not the unit price)
-Also extract tax and total when present. Merchant name and subtotal are optional enrichments.
-Do not invent items. If a field is missing, return null for optional totals and default quantity to 1.
+You are a receipt cleanup model.
+Your job is to normalize structured OCR data into receipt JSON.
+Rules:
+- Return valid JSON only. No markdown, no prose, no explanations.
+- Never hallucinate missing items or prices.
+- Use only evidence present in the provided structured input.
+- If a value cannot be determined confidently, return null for nullable fields.
+- For each item, total_price must be the full line total.
+- unit_price may be null when not explicitly derivable from the input.
+- modifiers must be an array of strings and may be empty.
+- confidence must be a number between 0 and 1 representing your confidence in the full output.
+- Ignore addresses, dates, timestamps, payment metadata, card digits, approval codes, batch numbers,
+  trace numbers, and other non-purchased lines unless they are clearly subtotal, tax, or total.
 """.strip()
 
 CLEANUP_RESPONSE_FORMAT = {
@@ -90,15 +147,23 @@ CLEANUP_RESPONSE_FORMAT = {
                         "type": "object",
                         "properties": {
                             "name": {"type": "string"},
-                            "price": {"type": "number"},
-                            "quantity": {"type": "integer"},
+                            "quantity": {"type": "number"},
+                            "unit_price": {"type": ["number", "null"]},
+                            "total_price": {"type": "number"},
+                            "modifiers": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
                         },
-                        "required": ["name", "price", "quantity"],
+                        "required": ["name", "quantity", "unit_price", "total_price", "modifiers"],
                         "additionalProperties": False,
                     },
                 },
+                "confidence": {
+                    "type": "number",
+                },
             },
-            "required": ["merchant_name", "subtotal", "tax", "total", "items"],
+            "required": ["merchant_name", "subtotal", "tax", "total", "items", "confidence"],
             "additionalProperties": False,
         },
     },
@@ -135,8 +200,10 @@ def _coerce_quantity(value: object | None) -> int:
 
 class CleanupReceiptItem(BaseModel):
     name: str
-    price: Decimal
-    quantity: int = 1
+    quantity: Decimal = Decimal("1")
+    unit_price: Decimal | None = None
+    total_price: Decimal
+    modifiers: list[str] = Field(default_factory=list)
 
     @field_validator("name", mode="before")
     @classmethod
@@ -146,18 +213,38 @@ class CleanupReceiptItem(BaseModel):
             raise ValueError("Item name cannot be blank")
         return cleaned
 
-    @field_validator("price", mode="before")
-    @classmethod
-    def validate_price(cls, value: object) -> Decimal:
-        price = _coerce_decimal(value)
-        if price is None or price <= 0:
-            raise ValueError("Item price must be greater than zero")
-        return price
-
     @field_validator("quantity", mode="before")
     @classmethod
-    def validate_quantity(cls, value: object) -> int:
-        return _coerce_quantity(value)
+    def validate_quantity(cls, value: object) -> Decimal:
+        quantity = _coerce_decimal(value)
+        if quantity is None or quantity <= 0:
+            raise ValueError("Item quantity must be greater than zero")
+        return quantity
+
+    @field_validator("unit_price", mode="before")
+    @classmethod
+    def validate_unit_price(cls, value: object) -> Decimal | None:
+        price = _coerce_decimal(value)
+        if price is not None and price <= 0:
+            raise ValueError("Item unit price must be greater than zero")
+        return price
+
+    @field_validator("total_price", mode="before")
+    @classmethod
+    def validate_total_price(cls, value: object) -> Decimal:
+        price = _coerce_decimal(value)
+        if price is None or price <= 0:
+            raise ValueError("Item total price must be greater than zero")
+        return price
+
+    @field_validator("modifiers", mode="before")
+    @classmethod
+    def validate_modifiers(cls, value: object) -> list[str]:
+        if value in (None, ""):
+            return []
+        if not isinstance(value, list):
+            raise ValueError("Item modifiers must be a list")
+        return [" ".join(str(item or "").split()).strip() for item in value if str(item or "").strip()]
 
 
 class CleanupReceiptPayload(BaseModel):
@@ -166,6 +253,7 @@ class CleanupReceiptPayload(BaseModel):
     tax: Decimal | None = None
     total: Decimal | None = None
     items: list[CleanupReceiptItem] = Field(default_factory=list)
+    confidence: Decimal = Decimal("0.0")
 
     @field_validator("merchant_name", mode="before")
     @classmethod
@@ -177,6 +265,54 @@ class CleanupReceiptPayload(BaseModel):
     @classmethod
     def validate_optional_money(cls, value: object) -> Decimal | None:
         return _coerce_decimal(value)
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def validate_confidence(cls, value: object) -> Decimal:
+        confidence = _coerce_decimal(value)
+        if confidence is None:
+            raise ValueError("Confidence is required")
+        if confidence < 0 or confidence > 1:
+            raise ValueError("Confidence must be between 0 and 1")
+        return confidence
+
+
+class OCRBoundingBox(BaseModel):
+    x: float
+    y: float
+    w: float
+    h: float
+
+    @field_validator("x", "y", "w", "h", mode="before")
+    @classmethod
+    def validate_normalized_coordinate(cls, value: object) -> float:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("OCR bounding box values must be numeric") from exc
+        if numeric < 0 or numeric > 1:
+            raise ValueError("OCR bounding box values must be normalized between 0 and 1")
+        return numeric
+
+
+class OCRLine(BaseModel):
+    text: str
+    bounding_box: OCRBoundingBox
+
+    @field_validator("text", mode="before")
+    @classmethod
+    def validate_text(cls, value: object) -> str:
+        cleaned = " ".join(str(value or "").split()).strip()
+        if not cleaned:
+            raise ValueError("OCR line text cannot be blank")
+        return cleaned
+
+
+class StructuredOCRPayload(BaseModel):
+    lines: list[OCRLine] = Field(default_factory=list)
+
+
+PREPARSER_CONFIDENCE_THRESHOLD = 0.85
 
 
 class ReceiptParserService:
@@ -197,32 +333,129 @@ class ReceiptParserService:
         file_content: bytes,
         filename: str,
         content_type: str,
+        append: bool = False,
     ) -> ReceiptUpload:
+        return self.save_upload_files(
+            bill_id,
+            [(file_content, filename, content_type)],
+            append=append,
+        )
+
+    def _delete_receipt_files_on_disk(self, receipt: ReceiptUpload) -> None:
+        paths: set[str] = set()
+        if receipt.receipt_images:
+            for img in receipt.receipt_images:
+                p = img.get("file_path")
+                if p:
+                    paths.add(p)
+        elif receipt.file_path:
+            paths.add(receipt.file_path)
+        for p in paths:
+            if p and os.path.exists(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+
+    def save_upload_files(
+        self,
+        bill_id: str,
+        files: list[tuple[bytes, str, str]],
+        append: bool = False,
+    ) -> ReceiptUpload:
+        if not files:
+            raise ValueError("At least one file is required")
+
         upload_dir = os.path.join(settings.UPLOAD_DIR, str(bill_id))
         os.makedirs(upload_dir, exist_ok=True)
 
         existing = self.get_receipt(bill_id)
-        file_path = os.path.join(upload_dir, filename)
 
-        if existing and existing.file_path != file_path and os.path.exists(existing.file_path):
-            os.remove(existing.file_path)
+        if append and existing:
+            if not existing.receipt_images:
+                existing.receipt_images = [
+                    {
+                        "file_path": existing.file_path,
+                        "original_filename": existing.original_filename,
+                        "content_type": existing.content_type,
+                    }
+                ]
+            meta: list[dict] = list(existing.receipt_images)
+            for file_content, filename, content_type in files:
+                safe = os.path.basename(filename) or "receipt.jpg"
+                unique_name = f"{uuid.uuid4().hex[:10]}_{safe}"
+                file_path = os.path.join(upload_dir, unique_name)
+                with open(file_path, "wb") as f:
+                    f.write(file_content)
+                meta.append(
+                    {
+                        "file_path": file_path,
+                        "original_filename": filename or safe,
+                        "content_type": content_type or "application/octet-stream",
+                    }
+                )
+            existing.receipt_images = meta
+            existing.file_path = meta[0]["file_path"]
+            existing.original_filename = meta[0]["original_filename"]
+            existing.content_type = meta[0]["content_type"]
+            existing.is_multi_image = len(meta) > 1
+            existing.ocr_structured_json = None
+            existing.overall_confidence = None
+            existing.validation_warnings = None
+            existing.parsed_version = None
+            existing.last_parsed_at = None
+            existing.parsed = False
+            existing.parsed_at = None
+            self._reset_parsed_data(bill_id)
+            self.db.commit()
+            self.db.refresh(existing)
+            return existing
 
-        with open(file_path, "wb") as f:
-            f.write(file_content)
+        if existing:
+            self._delete_receipt_files_on_disk(existing)
+
+        meta = []
+        for file_content, filename, content_type in files:
+            safe = os.path.basename(filename) or "receipt.jpg"
+            unique_name = f"{uuid.uuid4().hex[:10]}_{safe}"
+            file_path = os.path.join(upload_dir, unique_name)
+            with open(file_path, "wb") as f:
+                f.write(file_content)
+            meta.append(
+                {
+                    "file_path": file_path,
+                    "original_filename": filename or safe,
+                    "content_type": content_type or "application/octet-stream",
+                }
+            )
 
         if existing:
             receipt = existing
-            receipt.file_path = file_path
-            receipt.original_filename = filename
-            receipt.content_type = content_type
+            receipt.receipt_images = meta
+            receipt.file_path = meta[0]["file_path"]
+            receipt.original_filename = meta[0]["original_filename"]
+            receipt.content_type = meta[0]["content_type"]
+            receipt.is_multi_image = len(meta) > 1
+            receipt.ocr_structured_json = None
+            receipt.overall_confidence = None
+            receipt.validation_warnings = None
+            receipt.parsed_version = None
+            receipt.last_parsed_at = None
             receipt.parsed = False
             receipt.parsed_at = None
         else:
             receipt = ReceiptUpload(
                 bill_id=bill_id,
-                file_path=file_path,
-                original_filename=filename,
-                content_type=content_type,
+                file_path=meta[0]["file_path"],
+                original_filename=meta[0]["original_filename"],
+                content_type=meta[0]["content_type"],
+                receipt_images=meta,
+                is_multi_image=len(meta) > 1,
+                ocr_structured_json=None,
+                overall_confidence=None,
+                validation_warnings=None,
+                parsed_version=None,
+                last_parsed_at=None,
             )
             self.db.add(receipt)
 
@@ -238,17 +471,134 @@ class ReceiptParserService:
             .first()
         )
 
+    def _receipt_image_entries(self, receipt: ReceiptUpload) -> list[dict[str, str]]:
+        # Backward-compatible bridge: legacy receipts still have a single file_path.
+        if receipt.receipt_images:
+            return list(receipt.receipt_images)
+        return [
+            {
+                "file_path": receipt.file_path,
+                "original_filename": receipt.original_filename,
+                "content_type": receipt.content_type,
+            }
+        ]
+
+    def _run_one_image_pipeline(
+        self, file_path: str, content_type: str
+    ) -> tuple[CleanupReceiptPayload, list[list[str]], dict | None]:
+        structured_ocr, raw_text = self._extract_structured_ocr_from_path(file_path, content_type)
+        rows = (
+            structured_ocr.get("rows")
+            if isinstance(structured_ocr, dict)
+            else None
+        )
+        if not rows:
+            rows = self._rows_from_raw_text(raw_text)
+
+        pre = parse_structured_rows(rows)
+        if rows:
+            if float(pre.get("confidence", 0.0)) >= PREPARSER_CONFIDENCE_THRESHOLD:
+                cleaned = self._cleanup_payload_from_preparser(pre)
+            else:
+                cleaned = self._cleanup_structured_data(rows=rows, preparsed=pre)
+        else:
+            cleaned = self._cleanup_payload_from_preparser(parse_structured_rows([]))
+
+        cleaned = normalize_cleanup_payload(
+            cleaned,
+            llm_client=self._client if settings.RECEIPT_NORMALIZE_USE_LLM else None,
+        )
+        return cleaned, rows, structured_ocr if isinstance(structured_ocr, dict) else None
+
     def parse_receipt(self, bill_id: str) -> ParsedReceipt:
         receipt = self.get_receipt(bill_id)
         if not receipt:
             raise ValueError(f"No receipt found for bill {bill_id}")
 
-        if receipt.parsed:
+        if receipt.parsed and receipt.parsed_version == RECEIPT_PIPELINE_VERSION:
             return self._build_parsed_receipt(bill_id)
 
-        raw_text = self._extract_raw_text(receipt)
-        cleaned = self._cleanup_ocr_text(raw_text)
-        return self._persist_parsed_receipt(bill_id, receipt, cleaned)
+        if receipt.parsed and receipt.parsed_version != RECEIPT_PIPELINE_VERSION:
+            self._reset_parsed_data(bill_id)
+            self.db.commit()
+            receipt = self.get_receipt(bill_id)
+            if not receipt:
+                raise ValueError(f"No receipt found for bill {bill_id}")
+
+        entries = self._receipt_image_entries(receipt)
+        merge_notes: list[str] = []
+
+        if len(entries) == 1:
+            ent = entries[0]
+            cleaned, rows, structured_ocr = self._run_one_image_pipeline(
+                ent["file_path"], ent["content_type"]
+            )
+            receipt.ocr_structured_json = structured_ocr
+            return self._persist_parsed_receipt(
+                bill_id,
+                receipt,
+                cleaned,
+                rows,
+                extra_warnings=merge_notes or None,
+                is_multi_image=None,
+                num_images=None,
+            )
+
+        receipt.ocr_structured_json = None
+        intermediates: list[dict] = []
+        all_rows: list[list[str]] = []
+
+        # Sequential by design: simpler error handling and deterministic merge order.
+        for idx, ent in enumerate(entries):
+            try:
+                cleaned_i, rows_i, _ = self._run_one_image_pipeline(
+                    ent["file_path"], ent["content_type"]
+                )
+                all_rows.extend(rows_i or [])
+                intermediates.append(
+                    {
+                        "items": [
+                            it.model_dump(mode="json") for it in cleaned_i.items
+                        ],
+                        "subtotal": float(cleaned_i.subtotal)
+                        if cleaned_i.subtotal is not None
+                        else None,
+                        "tax": float(cleaned_i.tax) if cleaned_i.tax is not None else None,
+                        "total": float(cleaned_i.total)
+                        if cleaned_i.total is not None
+                        else None,
+                        "merchant_name": cleaned_i.merchant_name,
+                        "confidence": float(cleaned_i.confidence),
+                        "source_image_index": idx,
+                    }
+                )
+            except Exception:
+                merge_notes.append(f"Failed to parse image {idx + 1}")
+
+        if not intermediates:
+            raise ValueError(
+                "All receipt images failed to parse"
+                if merge_notes
+                else "No receipt images available to parse"
+            )
+
+        from app.services.receipt_merge_service import merge_intermediate_parses
+
+        merged_payload, merge_warnings_out = merge_intermediate_parses(
+            intermediates,
+            merge_warnings=list(merge_notes),
+        )
+
+        # Persist only the merged final output; per-image parses remain in-memory only.
+        return self._persist_parsed_receipt(
+            bill_id,
+            receipt,
+            merged_payload,
+            all_rows,
+            extra_warnings=merge_warnings_out,
+            is_multi_image=True,
+            num_images=len(entries),
+        )
 
     def get_items(self, bill_id: str) -> list[ReceiptItem]:
         return (
@@ -258,7 +608,7 @@ class ReceiptParserService:
             .all()
         )
 
-    def sync_items(self, bill_id: str, data: dict) -> dict:
+    def sync_items(self, bill_id: str, data: dict, user_id: str | None = None) -> dict:
         bill = self.db.query(Bill).filter(Bill.id == bill_id).first()
         if not bill:
             raise ValueError(f"Bill {bill_id} not found")
@@ -288,12 +638,23 @@ class ReceiptParserService:
             if not item:
                 raise ValueError(f"ReceiptItem {item_id} not found")
 
+            before = self._item_snapshot(item)
             normalized = self._normalize_edit_item(
                 name=raw_update["name"],
                 quantity=raw_update["quantity"],
                 total_price=raw_update["total_price"],
             )
             self._apply_item_values(item, normalized)
+            after = self._item_snapshot(item)
+            record_item_edit_feedback(
+                self.db,
+                receipt_item_id=item.id,
+                bill_id=item.bill_id,
+                user_id=uuid.UUID(user_id) if user_id else None,
+                source="sync",
+                before=before,
+                after=after,
+            )
             updated_items.append(item)
 
         created_items: list[ReceiptItem] = []
@@ -338,10 +699,12 @@ class ReceiptParserService:
             "items": self.get_items(bill_id),
         }
 
-    def update_item(self, item_id: str, data: dict) -> ReceiptItem:
+    def update_item(self, item_id: str, data: dict, user_id: str | None = None) -> ReceiptItem:
         item = self.db.query(ReceiptItem).filter(ReceiptItem.id == item_id).first()
         if not item:
             raise ValueError(f"ReceiptItem {item_id} not found")
+
+        before = self._item_snapshot(item)
 
         total_price = data.get("total_price")
         if total_price is None and "unit_price" in data:
@@ -363,6 +726,17 @@ class ReceiptParserService:
         for field in ("category", "is_taxable"):
             if field in data:
                 setattr(item, field, data[field])
+
+        after = self._item_snapshot(item)
+        record_item_edit_feedback(
+            self.db,
+            receipt_item_id=item.id,
+            bill_id=item.bill_id,
+            user_id=uuid.UUID(user_id) if user_id else None,
+            source="patch",
+            before=before,
+            after=after,
+        )
 
         self._recalculate_assignments_for_item(item)
         bill = self.db.query(Bill).filter(Bill.id == item.bill_id).first()
@@ -392,19 +766,85 @@ class ReceiptParserService:
             bill.total = Decimal("0.00")
             bill.merchant_name = None
 
-    def _extract_raw_text(self, receipt: ReceiptUpload) -> str:
+        receipt = self.get_receipt(bill_id)
+        if receipt:
+            receipt.overall_confidence = None
+            receipt.validation_warnings = None
+            receipt.parsed = False
+            receipt.parsed_at = None
+            receipt.last_parsed_at = None
+            receipt.parsed_version = None
+
+    def _extract_structured_ocr_from_path(
+        self, file_path: str, content_type: str
+    ) -> tuple[dict | None, str]:
         if not self._client:
             raise ValueError("GROQ_API_KEY is not configured")
 
-        if not os.path.exists(receipt.file_path):
+        if not os.path.exists(file_path):
             raise ValueError("Uploaded receipt file is missing from storage")
 
-        with open(receipt.file_path, "rb") as f:
+        with open(file_path, "rb") as f:
             encoded = base64.b64encode(f.read()).decode("utf-8")
 
-        content_type = receipt.content_type
-        if "/" not in content_type:
-            content_type = mimetypes.guess_type(receipt.file_path)[0] or "image/jpeg"
+        ct = content_type
+        if "/" not in ct:
+            ct = mimetypes.guess_type(file_path)[0] or "image/jpeg"
+
+        try:
+            response = self._client.chat.completions.create(
+                model=settings.GROQ_RECEIPT_VISION_MODEL,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": OCR_PROMPT},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{ct};base64,{encoded}",
+                                },
+                            },
+                        ],
+                    }
+                ],
+                response_format=OCR_RESPONSE_FORMAT,
+            )
+
+            message = response.choices[0].message
+            content = message.content or ""
+            if not content:
+                raise ValueError("Structured OCR returned no JSON")
+
+            structured_payload = StructuredOCRPayload.model_validate(json.loads(content))
+            rows = self._build_rows_from_structured_ocr(structured_payload.lines)
+            raw_text = "\n".join(" ".join(row) for row in rows if row).strip()
+            if not raw_text:
+                raise ValueError("Structured OCR returned empty rows")
+            return {"rows": rows}, raw_text
+        except Exception:
+            raw_text = self._extract_raw_text_fallback_from_path(file_path, encoded, ct)
+            return None, raw_text
+
+    def _extract_raw_text_fallback_from_path(
+        self,
+        file_path: str,
+        encoded: str | None = None,
+        content_type: str | None = None,
+    ) -> str:
+        if not self._client:
+            raise ValueError("GROQ_API_KEY is not configured")
+
+        if not os.path.exists(file_path):
+            raise ValueError("Uploaded receipt file is missing from storage")
+
+        if encoded is None:
+            with open(file_path, "rb") as f:
+                encoded = base64.b64encode(f.read()).decode("utf-8")
+
+        ct = content_type or "image/jpeg"
+        if "/" not in ct:
+            ct = mimetypes.guess_type(file_path)[0] or "image/jpeg"
 
         response = self._client.chat.completions.create(
             model=settings.GROQ_RECEIPT_VISION_MODEL,
@@ -412,11 +852,20 @@ class ReceiptParserService:
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": OCR_PROMPT},
+                        {
+                            "type": "text",
+                            "text": (
+                                "You are an OCR engine for receipt images.\n"
+                                "Transcribe the visible text exactly as it appears, preserving line breaks and "
+                                "approximate reading order.\n"
+                                "Do not summarize, correct, interpret, or structure the text.\n"
+                                "Return only the raw receipt text with no markdown fences or commentary."
+                            ),
+                        },
                         {
                             "type": "image_url",
                             "image_url": {
-                                "url": f"data:{content_type};base64,{encoded}",
+                                "url": f"data:{ct};base64,{encoded}",
                             },
                         },
                     ],
@@ -428,47 +877,147 @@ class ReceiptParserService:
             raise ValueError("OCR returned no text for this receipt")
         return raw_text
 
-    def _cleanup_ocr_text(self, raw_text: str) -> CleanupReceiptPayload:
+    def _build_rows_from_structured_ocr(self, lines: list[OCRLine]) -> list[list[str]]:
+        if not lines:
+            return []
+
+        sorted_lines = sorted(lines, key=lambda line: (line.bounding_box.y, line.bounding_box.x))
+        y_threshold = 0.02
+        rows: list[dict[str, object]] = []
+
+        for line in sorted_lines:
+            y_center = line.bounding_box.y + (line.bounding_box.h / 2)
+            placed = False
+            for row in rows:
+                row_y = float(row["y_center"])
+                if abs(row_y - y_center) <= y_threshold:
+                    row_lines = row["lines"]
+                    assert isinstance(row_lines, list)
+                    row_lines.append(line)
+                    row["y_center"] = (row_y + y_center) / 2
+                    placed = True
+                    break
+
+            if not placed:
+                rows.append({"y_center": y_center, "lines": [line]})
+
+        structured_rows: list[list[str]] = []
+        rows.sort(key=lambda row: float(row["y_center"]))
+        for row in rows:
+            row_lines = row["lines"]
+            assert isinstance(row_lines, list)
+            ordered = sorted(row_lines, key=lambda entry: entry.bounding_box.x)
+            row_tokens = [entry.text for entry in ordered if entry.text]
+            if row_tokens:
+                structured_rows.append(row_tokens)
+
+        return structured_rows
+
+    def _rows_from_raw_text(self, raw_text: str) -> list[list[str]]:
+        return [[line.strip()] for line in raw_text.splitlines() if line.strip()]
+
+    def _cleanup_payload_from_preparser(self, preparsed: dict) -> CleanupReceiptPayload:
+        return CleanupReceiptPayload.model_validate(
+            {
+                "merchant_name": None,
+                "subtotal": preparsed.get("totals", {}).get("subtotal"),
+                "tax": preparsed.get("totals", {}).get("tax"),
+                "total": preparsed.get("totals", {}).get("total"),
+                "items": [
+                    {
+                        "name": item["name"],
+                        "quantity": item.get("quantity", 1),
+                        "unit_price": item.get("unit_price"),
+                        "total_price": item.get("total_price", item.get("price")),
+                        "modifiers": item.get("modifiers", []),
+                    }
+                    for item in preparsed.get("items", [])
+                ],
+                "confidence": preparsed.get("confidence", 0.0),
+            }
+        )
+
+    def _cleanup_structured_data(
+        self,
+        *,
+        rows: list[list[str]] | None,
+        preparsed: dict | None,
+    ) -> CleanupReceiptPayload:
         if not self._client:
             raise ValueError("GROQ_API_KEY is not configured")
 
-        response = self._client.chat.completions.create(
-            model=settings.GROQ_RECEIPT_CLEANUP_MODEL,
-            messages=[
-                {"role": "system", "content": CLEANUP_SYSTEM_PROMPT},
-                {"role": "user", "content": raw_text},
-            ],
-            response_format=CLEANUP_RESPONSE_FORMAT,
-        )
+        fallback = self._cleanup_payload_from_preparser(preparsed or {})
+        user_payload = {
+            "rows": rows or [],
+            "preparsed": preparsed or {},
+        }
 
-        message = response.choices[0].message
-        if getattr(message, "refusal", None):
-            raise ValueError(f"Receipt cleanup refused: {message.refusal}")
+        for _ in range(2):
+            response = self._client.chat.completions.create(
+                model=settings.GROQ_RECEIPT_CLEANUP_MODEL,
+                messages=[
+                    {"role": "system", "content": CLEANUP_SYSTEM_PROMPT},
+                    {"role": "user", "content": json.dumps(user_payload)},
+                ],
+                response_format=CLEANUP_RESPONSE_FORMAT,
+            )
 
-        content = message.content or ""
-        if not content:
-            raise ValueError("Receipt cleanup returned no structured JSON")
+            message = response.choices[0].message
+            if getattr(message, "refusal", None):
+                continue
 
-        try:
-            payload = json.loads(content)
-            return CleanupReceiptPayload.model_validate(payload)
-        except (json.JSONDecodeError, ValidationError, ValueError) as exc:
-            raise ValueError("Receipt cleanup returned invalid structured data") from exc
+            content = message.content or ""
+            if not content:
+                continue
+
+            try:
+                payload = json.loads(content)
+                return CleanupReceiptPayload.model_validate(payload)
+            except (json.JSONDecodeError, ValidationError, ValueError):
+                continue
+
+        return fallback
 
     def _persist_parsed_receipt(
         self,
         bill_id: str,
         receipt: ReceiptUpload,
         cleaned: CleanupReceiptPayload,
+        rows: list[list[str]] | None = None,
+        *,
+        extra_warnings: list[str] | None = None,
+        is_multi_image: bool | None = None,
+        num_images: int | None = None,
     ) -> ParsedReceipt:
         self._reset_parsed_data(bill_id)
 
+        validated = validate_parsed_receipt(
+            items=[
+                {
+                    "name": item.name,
+                    "quantity": item.quantity,
+                    "unit_price": item.unit_price,
+                    "total_price": item.total_price,
+                    "modifiers": item.modifiers,
+                }
+                for item in cleaned.items
+            ],
+            subtotal=cleaned.subtotal,
+            tax=cleaned.tax,
+            total=cleaned.total,
+            llm_confidence=cleaned.confidence,
+            rows=rows,
+        )
+
         warnings: list[str] = []
+        if extra_warnings:
+            warnings.extend(extra_warnings)
+        warnings.extend(validated["warnings"])
         parsed_items: list[ParsedReceiptItem] = []
         db_items: list[ReceiptItem] = []
 
-        for item in cleaned.items:
-            normalized = self._normalize_item(item)
+        for item in validated["items"]:
+            normalized = self._normalize_validated_item(item)
             if not normalized:
                 continue
 
@@ -512,14 +1061,12 @@ class ReceiptParserService:
         if not parsed_items:
             raise ValueError("No purchasable items could be parsed from this receipt")
 
-        subtotal = sum((item.price for item in parsed_items), Decimal("0.00")).quantize(MONEY_QUANTIZE)
-        tax = cleaned.tax if cleaned.tax is not None else Decimal("0.00")
+        subtotal = validated["subtotal"]
+        tax = validated["tax"]
         if cleaned.tax is None:
             warnings.append("Tax was not detected; defaulted to 0.")
 
-        total = cleaned.total if cleaned.total is not None else (subtotal + tax).quantize(MONEY_QUANTIZE)
-        if cleaned.total is None:
-            warnings.append("Total was not detected; computed from items and tax.")
+        total = validated["total"]
 
         bill = self.db.query(Bill).filter(Bill.id == bill_id).first()
         if bill:
@@ -529,17 +1076,26 @@ class ReceiptParserService:
             if cleaned.merchant_name:
                 bill.merchant_name = cleaned.merchant_name
 
+        now = datetime.now(timezone.utc)
         receipt.parsed = True
-        receipt.parsed_at = datetime.now(timezone.utc)
+        receipt.parsed_at = now
+        receipt.last_parsed_at = now
+        receipt.parsed_version = RECEIPT_PIPELINE_VERSION
+        receipt.overall_confidence = validated["overall_confidence"]
+        receipt.validation_warnings = warnings
 
         self.db.commit()
         return ParsedReceipt(
             merchant_name=cleaned.merchant_name,
-            subtotal=cleaned.subtotal if cleaned.subtotal is not None else subtotal,
+            subtotal=subtotal,
             items=parsed_items,
             tax=tax,
             total=total,
+            pipeline_version=RECEIPT_PIPELINE_VERSION,
+            overall_confidence=validated["overall_confidence"],
             warnings=warnings,
+            is_multi_image=is_multi_image,
+            num_images=num_images,
         )
 
     def _build_parsed_receipt(self, bill_id: str) -> ParsedReceipt:
@@ -547,7 +1103,13 @@ class ReceiptParserService:
         if not bill:
             raise ValueError(f"Bill {bill_id} not found")
 
+        receipt = self.get_receipt(bill_id)
         items = self.get_items(bill_id)
+        num_imgs = (
+            len(receipt.receipt_images)
+            if receipt and receipt.receipt_images
+            else (1 if receipt else None)
+        )
         return ParsedReceipt(
             merchant_name=bill.merchant_name,
             subtotal=bill.subtotal,
@@ -561,7 +1123,11 @@ class ReceiptParserService:
             ],
             tax=bill.tax,
             total=bill.total,
-            warnings=[],
+            pipeline_version=receipt.parsed_version if receipt else None,
+            overall_confidence=receipt.overall_confidence if receipt else None,
+            warnings=list(receipt.validation_warnings or []) if receipt else [],
+            is_multi_image=receipt.is_multi_image if receipt else None,
+            num_images=num_imgs,
         )
 
     def _normalize_item(self, item: CleanupReceiptItem) -> dict | None:
@@ -569,10 +1135,54 @@ class ReceiptParserService:
         if not name or self._looks_like_non_item(name):
             return None
 
+        quantity_decimal = item.quantity.quantize(MONEY_QUANTIZE)
+        quantity = int(quantity_decimal) if quantity_decimal == quantity_decimal.to_integral_value() else 1
+        total_price = item.total_price.quantize(MONEY_QUANTIZE)
+        unit_price = (
+            item.unit_price.quantize(MONEY_QUANTIZE)
+            if item.unit_price is not None
+            else (
+                (total_price / quantity).quantize(MONEY_QUANTIZE, rounding=ROUND_HALF_UP)
+                if quantity > 0
+                else total_price
+            )
+        )
+
         return {
             "name": name,
-            "quantity": _coerce_quantity(item.quantity),
-            "price": item.price.quantize(MONEY_QUANTIZE),
+            "quantity": quantity,
+            "unit_price": unit_price,
+            "total_price": total_price,
+        }
+
+    def _normalize_validated_item(self, item: dict) -> dict | None:
+        name = " ".join(str(item.get("name", "")).split()).strip(" -:")
+        if not name or self._looks_like_non_item(name):
+            return None
+
+        quantity_decimal = _coerce_decimal(item.get("quantity")) or Decimal("1.00")
+        quantity = (
+            int(quantity_decimal)
+            if quantity_decimal == quantity_decimal.to_integral_value()
+            else 1
+        )
+        total_price = (_coerce_decimal(item.get("total_price")) or Decimal("0.00")).quantize(MONEY_QUANTIZE)
+        unit_price = _coerce_decimal(item.get("unit_price"))
+        if unit_price is None:
+            unit_price = (
+                (total_price / quantity).quantize(MONEY_QUANTIZE, rounding=ROUND_HALF_UP)
+                if quantity > 0
+                else total_price
+            )
+        else:
+            unit_price = unit_price.quantize(MONEY_QUANTIZE)
+
+        return {
+            "name": name,
+            "quantity": quantity,
+            "unit_price": unit_price,
+            "total_price": total_price,
+            "confidence": float(item.get("confidence", 0.0)),
         }
 
     def _looks_like_non_item(self, text: str) -> bool:
@@ -625,6 +1235,15 @@ class ReceiptParserService:
         item.quantity = data["quantity"]
         item.total_price = data["total_price"]
         item.unit_price = data["unit_price"]
+
+    @staticmethod
+    def _item_snapshot(item: ReceiptItem) -> dict:
+        return {
+            "name": item.name,
+            "quantity": item.quantity,
+            "unit_price": item.unit_price,
+            "total_price": item.total_price,
+        }
 
     def _recalculate_bill_totals(self, bill: Bill) -> None:
         subtotal = sum(

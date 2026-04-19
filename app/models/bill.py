@@ -67,3 +67,9 @@ class Bill(Base):
     virtual_cards = relationship(
         "VirtualCard", back_populates="bill", cascade="all, delete-orphan"
     )
+    receipt_parse_jobs = relationship(
+        "ReceiptParseJob", back_populates="bill", cascade="all, delete-orphan"
+    )
+    receipt_item_feedback = relationship(
+        "ReceiptItemFeedback", back_populates="bill", cascade="all, delete-orphan"
+    )

@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -12,10 +13,34 @@ class ReceiptUploadOut(BaseModel):
     original_filename: str
     content_type: str
     parsed: bool
+    parsed_version: str | None = None
     parsed_at: datetime | None = None
+    last_parsed_at: datetime | None = None
+    overall_confidence: float | None = None
     created_at: datetime
+    images: list[str] = Field(default_factory=list)
+    is_multi_image: bool = False
 
     model_config = {"from_attributes": True}
+
+
+def receipt_upload_to_out(receipt: Any) -> ReceiptUploadOut:
+    """Build upload response including `images` paths and multi-image flag."""
+    base = ReceiptUploadOut.model_validate(receipt)
+    if getattr(receipt, "receipt_images", None):
+        paths = [
+            str(e.get("file_path", ""))
+            for e in receipt.receipt_images
+            if isinstance(e, dict)
+        ]
+    else:
+        paths = [str(receipt.file_path)] if getattr(receipt, "file_path", None) else []
+    return base.model_copy(
+        update={
+            "images": paths,
+            "is_multi_image": bool(getattr(receipt, "is_multi_image", False)),
+        }
+    )
 
 
 class ReceiptItemOut(BaseModel):
@@ -74,4 +99,8 @@ class ParsedReceipt(BaseModel):
     total: Decimal
     merchant_name: str | None = None
     subtotal: Decimal | None = None
+    pipeline_version: str | None = None
+    overall_confidence: float | None = None
     warnings: list[str] = Field(default_factory=list)
+    is_multi_image: bool | None = None
+    num_images: int | None = None

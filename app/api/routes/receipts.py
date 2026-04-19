@@ -1,20 +1,28 @@
 import uuid
 
-from fastapi import APIRouter, Depends, UploadFile, File
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Header, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
+from app.core.config import settings
 from app.db.session import get_db
 from app.models.user import User
 from app.core.response import success_response, error_response
 from app.schemas.bill import BillOut
 from app.schemas.receipt import (
-    ReceiptUploadOut,
     ReceiptItemOut,
     ReceiptItemUpdate,
     ReceiptItemSyncRequest,
+    receipt_upload_to_out,
+)
+from app.services.receipt_parse_job_service import (
+    claim_parse_job,
+    get_or_create_parse_job,
+    get_parse_job_for_bill,
+    job_to_status_payload,
 )
 from app.services.receipt_parser_service import ReceiptParserService
+from app.workers.receipt_parse_worker import run_receipt_parse_job
 
 router = APIRouter(prefix="/bills/{bill_id}/receipt", tags=["Receipts"])
 
@@ -22,24 +30,43 @@ router = APIRouter(prefix="/bills/{bill_id}/receipt", tags=["Receipts"])
 @router.post("/upload", status_code=201)
 async def upload_receipt(
     bill_id: uuid.UUID,
-    file: UploadFile = File(...),
+    append: bool = Query(
+        False,
+        description="If true, append these files to an existing receipt (sequential uploads).",
+    ),
+    file: UploadFile | None = File(None),
+    files: list[UploadFile] | None = File(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     svc = ReceiptParserService(db)
-    file_content = await file.read()
+    uploads: list[UploadFile] = []
+    if files:
+        uploads.extend(files)
+    if file:
+        uploads.append(file)
+    if not uploads:
+        return error_response("UPLOAD_ERROR", "At least one file is required", 400)
+
+    tuples: list[tuple[bytes, str, str]] = []
+    for uf in uploads:
+        content = await uf.read()
+        tuples.append(
+            (
+                content,
+                uf.filename or "receipt",
+                uf.content_type or "application/octet-stream",
+            )
+        )
     try:
-        receipt = svc.save_upload(
-            bill_id=str(bill_id),
-            file_content=file_content,
-            filename=file.filename or "receipt",
-            content_type=file.content_type or "application/octet-stream",
+        receipt = svc.save_upload_files(
+            bill_id=str(bill_id), files=tuples, append=append
         )
     except ValueError as e:
         return error_response("UPLOAD_ERROR", str(e), 400)
 
     return success_response(
-        data=ReceiptUploadOut.model_validate(receipt).model_dump(),
+        data=receipt_upload_to_out(receipt).model_dump(),
         message="Receipt uploaded",
     )
 
@@ -55,22 +82,63 @@ def get_receipt(
     if not receipt:
         return error_response("NOT_FOUND", "No receipt found for this bill", 404)
 
-    return success_response(data=ReceiptUploadOut.model_validate(receipt).model_dump())
+    return success_response(data=receipt_upload_to_out(receipt).model_dump())
 
 
 @router.post("/parse")
 def parse_receipt(
     bill_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    sync: bool = Query(
+        False,
+        description="If true, parse synchronously and return ParsedReceipt (legacy clients).",
+    ),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    svc = ReceiptParserService(db)
-    try:
-        parsed = svc.parse_receipt(str(bill_id))
-    except ValueError as e:
-        return error_response("PARSE_ERROR", str(e), 400)
+    if sync:
+        svc = ReceiptParserService(db)
+        try:
+            parsed = svc.parse_receipt(str(bill_id))
+        except ValueError as e:
+            return error_response("PARSE_ERROR", str(e), 400)
 
-    return success_response(data=parsed.model_dump(), message="Receipt parsed successfully")
+        return success_response(
+            data=parsed.model_dump(mode="json", exclude_none=True),
+            message="Receipt parsed successfully",
+        )
+
+    job = get_or_create_parse_job(db, bill_id=bill_id, idempotency_key=idempotency_key)
+    if job.status == "queued":
+        if claim_parse_job(db, job.id):
+            if settings.CELERY_BROKER_URL:
+                from app.celery_app import parse_receipt_celery_task
+
+                parse_receipt_celery_task.delay(str(job.id))
+            else:
+                background_tasks.add_task(run_receipt_parse_job, str(job.id))
+    db.refresh(job)
+
+    payload = {"job_id": str(job.id), "status": job.status}
+    if job.status == "completed" and job.result_json:
+        payload["result"] = job.result_json
+
+    return success_response(data=payload, message="Parse job accepted")
+
+
+@router.get("/parse-status/{job_id}")
+def get_parse_status(
+    bill_id: uuid.UUID,
+    job_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    job = get_parse_job_for_bill(db, bill_id=bill_id, job_id=job_id)
+    if not job:
+        return error_response("NOT_FOUND", "Parse job not found", 404)
+
+    return success_response(data=job_to_status_payload(job))
 
 
 @router.post("/items/sync")
@@ -82,7 +150,11 @@ def sync_receipt_items(
 ):
     svc = ReceiptParserService(db)
     try:
-        result = svc.sync_items(str(bill_id), body.model_dump())
+        result = svc.sync_items(
+            str(bill_id),
+            body.model_dump(),
+            user_id=str(current_user.id),
+        )
     except ValueError as e:
         return error_response("BAD_REQUEST", str(e), 400)
 
@@ -105,7 +177,11 @@ def update_receipt_item(
 ):
     svc = ReceiptParserService(db)
     try:
-        item = svc.update_item(str(item_id), body.model_dump(exclude_unset=True))
+        item = svc.update_item(
+            str(item_id),
+            body.model_dump(exclude_unset=True),
+            user_id=str(current_user.id),
+        )
     except ValueError:
         return error_response("NOT_FOUND", "Receipt item not found", 404)
 

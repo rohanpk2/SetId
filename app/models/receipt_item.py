@@ -37,3 +37,8 @@ class ReceiptItem(Base):
     assignments = relationship(
         "ItemAssignment", back_populates="item", cascade="all, delete-orphan"
     )
+    feedback_rows = relationship(
+        "ReceiptItemFeedback",
+        back_populates="receipt_item",
+        cascade="all, delete-orphan",
+    )
