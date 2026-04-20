@@ -473,13 +473,13 @@ function RecentActivitySection({ activities, onItemPress }) {
   );
 }
 
-function FloatingActionButton({ tabBarHeight, onPress, loading }) {
+function FloatingActionButton({ bottomOffset, onPress, loading }) {
   return (
     <TouchableOpacity
       activeOpacity={0.85}
       onPress={onPress}
       disabled={loading}
-      style={[styles.fab, shadows.fab, { bottom: tabBarHeight + 16 }]}
+      style={[styles.fab, shadows.fab, { bottom: bottomOffset }]}
     >
       <LinearGradient
         colors={[colors.secondary, colors.secondaryDim]}
@@ -646,6 +646,11 @@ export default function DashboardScreen({ navigation }) {
           { paddingTop: insets.top + 72, paddingBottom: tabBarHeight + 88 },
         ]}
         showsVerticalScrollIndicator={false}
+        // When the dashboard fits on a single screen there's nothing to scroll to,
+        // so disable iOS rubber-band and Android overscroll. RefreshControl still
+        // works because pull-to-refresh doesn't need overscroll to trigger.
+        alwaysBounceVertical={false}
+        overScrollMode="never"
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -670,7 +675,7 @@ export default function DashboardScreen({ navigation }) {
       </ScrollView>
 
       <FloatingActionButton
-        tabBarHeight={tabBarHeight}
+        bottomOffset={insets.bottom - 8}
         loading={creatingBill}
         onPress={handleCreateBillFromReceipt}
       />

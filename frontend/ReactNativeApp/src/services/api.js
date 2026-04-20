@@ -346,6 +346,8 @@ export const users = {
   invite: (email) => client.post('/users/invite', { email }),
 
   getProfile: (userId) => client.get(`/users/${userId}`),
+
+  deleteAccount: () => client.delete('/users/me'),
 };
 
 // ─── Notifications ───────────────────────────────────────────────────────────
