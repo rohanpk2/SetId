@@ -1022,7 +1022,11 @@ class ReceiptParserService:
                 continue
 
             name = normalized["name"]
-            price = normalized["price"]
+            # `_normalize_validated_item` returns `total_price` (the line's full
+            # cost across all units) and `unit_price` separately. We want the
+            # line total here because the loop below re-distributes cents
+            # across `quantity` individual rows.
+            price = normalized["total_price"]
             quantity = normalized["quantity"]
 
             # Expand multi-unit lines into one quantity=1 row per unit so each unit

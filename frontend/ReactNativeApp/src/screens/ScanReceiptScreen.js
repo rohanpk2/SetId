@@ -472,9 +472,8 @@ export default function ScanReceiptScreen({ navigation, route }) {
                   end={{ x: 1, y: 1 }}
                   style={styles.actionGradient}
                 >
-                  <MaterialIcons name="auto-awesome" size={22} color={colors.onSecondary} />
                   <Text style={styles.actionTextPrimary}>
-                    {`Process ${queuedImages.length} ${queuedImages.length > 1 ? 'photos' : 'photo'}`}
+                    {`Process Receipt`}
                   </Text>
                 </LinearGradient>
               </TouchableOpacity>

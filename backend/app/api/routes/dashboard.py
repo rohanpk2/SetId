@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
@@ -67,14 +67,15 @@ def _load_dashboard_aggregates(db: Session, user_id: str) -> _DashboardAggregate
     """
 
     # 1. All bills where the user is owner OR a member.
-    member_bill_ids_subq = (
-        db.query(BillMember.bill_id)
-        .filter(BillMember.user_id == user_id)
-        .subquery()
+    # `select(...)` is the SA 2.x-correct construct for `Column.in_(...)`.
+    # Passing a `.subquery()` works but emits a deprecation warning on every
+    # request, which floods the logs.
+    member_bill_ids_stmt = select(BillMember.bill_id).where(
+        BillMember.user_id == user_id
     )
     bills: list[Bill] = (
         db.query(Bill)
-        .filter(or_(Bill.owner_id == user_id, Bill.id.in_(member_bill_ids_subq)))
+        .filter(or_(Bill.owner_id == user_id, Bill.id.in_(member_bill_ids_stmt)))
         .order_by(Bill.created_at.desc())
         .all()
     )
