@@ -17,6 +17,21 @@ import { useAuth } from '../contexts/AuthContext';
 import { users as usersApi } from '../services/api';
 import LazyImage from '../components/LazyImage';
 
+/** Pretty-print a phone number, falling back to the raw value or an empty
+ *  string. Accepts E.164 (e.g. "+14155551234") and returns "+1 (415) 555-1234"
+ *  for US/CA numbers; otherwise returns the input untouched. */
+function formatPhoneForDisplay(raw) {
+  if (!raw) return '';
+  const digits = String(raw).replace(/\D/g, '');
+  if (digits.length === 11 && digits.startsWith('1')) {
+    return `+1 (${digits.slice(1, 4)}) ${digits.slice(4, 7)}-${digits.slice(7)}`;
+  }
+  if (digits.length === 10) {
+    return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+  }
+  return raw;
+}
+
 export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const { user, logout } = useAuth();
@@ -53,6 +68,13 @@ export default function ProfileScreen() {
     .join('')
     .slice(0, 2)
     .toUpperCase();
+
+  // Phone-auth users have a synthetic email like `14155551234@phone.users.spltr`
+  // that we never want to show — render their phone number instead (or nothing).
+  const isSyntheticEmail = (display?.email || '').endsWith('@phone.users.spltr');
+  const contactLine = isSyntheticEmail
+    ? formatPhoneForDisplay(display?.phone)
+    : (display?.email || '');
 
   const handleLogout = () => {
     Alert.alert('Log out', 'Are you sure you want to log out?', [
@@ -121,7 +143,9 @@ export default function ProfileScreen() {
                 )}
               </View>
               <Text style={styles.name}>{display?.full_name || 'User'}</Text>
-              <Text style={styles.email}>{display?.email || ''}</Text>
+              {contactLine ? (
+                <Text style={styles.email}>{contactLine}</Text>
+              ) : null}
             </View>
 
             <View style={styles.section}>
@@ -154,25 +178,44 @@ export default function ProfileScreen() {
               </LinearGradient>
             </TouchableOpacity>
 
-            <TouchableOpacity
-              activeOpacity={0.85}
-              onPress={handleDeleteAccount}
-              disabled={deleting}
-              style={[styles.deleteBtn, deleting && styles.deleteBtnDisabled]}
-            >
-              {deleting ? (
-                <ActivityIndicator size="small" color={colors.error} />
-              ) : (
-                <>
-                  <MaterialIcons
-                    name="delete-outline"
-                    size={20}
-                    color={colors.error}
-                  />
-                  <Text style={styles.deleteText}>Delete account</Text>
-                </>
-              )}
-            </TouchableOpacity>
+            <View style={styles.dangerZone}>
+              <TouchableOpacity
+                activeOpacity={0.7}
+                onPress={handleDeleteAccount}
+                disabled={deleting}
+                style={[
+                  styles.deleteBtn,
+                  deleting && styles.deleteBtnDisabled,
+                ]}
+              >
+                <View style={styles.deleteIconWrap}>
+                  {deleting ? (
+                    <ActivityIndicator size="small" color={colors.error} />
+                  ) : (
+                    <MaterialIcons
+                      name="delete-outline"
+                      size={20}
+                      color={colors.error}
+                    />
+                  )}
+                </View>
+                <View style={styles.deleteTextCol}>
+                  <Text style={styles.deleteTitle}>
+                    {deleting ? 'Deleting account…' : 'Delete account'}
+                  </Text>
+                  <Text style={styles.deleteSubtitle} numberOfLines={2}>
+                    Permanently remove your account and personal details.
+                    This cannot be undone.
+                  </Text>
+                </View>
+                <MaterialIcons
+                  name="chevron-right"
+                  size={22}
+                  color={colors.error}
+                  style={styles.deleteChevron}
+                />
+              </TouchableOpacity>
+            </View>
           </>
         )}
       </ScrollView>
@@ -290,22 +333,59 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: colors.onError,
   },
+  dangerZone: {
+    marginTop: 32,
+  },
+  dangerZoneLabel: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 2,
+    color: colors.error,
+    marginBottom: 12,
+    textTransform: 'uppercase',
+  },
   deleteBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 14,
-    marginTop: 12,
+    gap: 14,
+    paddingVertical: 16,
+    paddingHorizontal: 18,
+    borderRadius: radii.xl,
+    backgroundColor: colors.errorContainer,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.error,
   },
   deleteBtnDisabled: {
     opacity: 0.6,
   },
-  deleteText: {
-    fontFamily: 'Inter_600SemiBold',
-    fontSize: 14,
-    fontWeight: '600',
+  deleteIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: colors.surfaceContainerLowest,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deleteTextCol: {
+    flex: 1,
+  },
+  deleteTitle: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 15,
+    fontWeight: '700',
     color: colors.error,
-    textDecorationLine: 'underline',
+  },
+  deleteSubtitle: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 12,
+    color: colors.error,
+    opacity: 0.8,
+    marginTop: 3,
+    lineHeight: 16,
+  },
+  deleteChevron: {
+    marginLeft: 4,
+    opacity: 0.8,
   },
 });
