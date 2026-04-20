@@ -91,86 +91,12 @@ function DollarChip({ left, top, size = 30, delay }) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Falling bill (used in transition)
-// ─────────────────────────────────────────────────────────────
-function FallingBill({ leftFrac, delay, duration, rotation }) {
-  const translateY = useRef(new Animated.Value(-80)).current;
-  const opacity    = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    const t = setTimeout(() => {
-      Animated.parallel([
-        Animated.timing(translateY, { toValue: SH + 80, duration, useNativeDriver: true }),
-        Animated.sequence([
-          Animated.timing(opacity, { toValue: 1,   duration: 80,          useNativeDriver: true }),
-          Animated.timing(opacity, { toValue: 0.9, duration: duration - 80, useNativeDriver: true }),
-        ]),
-      ]).start();
-    }, delay);
-    return () => clearTimeout(t);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  return (
-    <Animated.View style={[
-      styles.fallingBill,
-      { left: leftFrac * SW, transform: [{ translateY }, { rotate: `${rotation}deg` }], opacity },
-    ]}>
-      <View style={styles.fallingBillInner}>
-        <Text style={styles.fallingBillText}>$</Text>
-      </View>
-    </Animated.View>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────
-// Money drop transition overlay
-// ─────────────────────────────────────────────────────────────
-const BILLS = Array.from({ length: 14 }).map((_, i) => ({
-  leftFrac: (6 + (i * 71) % 88) / 100,
-  delay:    (i * 55) % 600,
-  duration: 1100 + ((i * 137) % 500),
-  rotation: ((i * 73) % 60) - 30,
-}));
-
-function MoneyDropTransition({ onDone }) {
-  const lineOpacity  = useRef(new Animated.Value(0)).current;
-  const lineScaleX   = useRef(new Animated.Value(0.3)).current;
-
-  useEffect(() => {
-    // Flash line
-    Animated.sequence([
-      Animated.parallel([
-        Animated.timing(lineOpacity, { toValue: 1,   duration: 200, delay: 100, useNativeDriver: true }),
-        Animated.timing(lineScaleX,  { toValue: 1,   duration: 300, delay: 100, useNativeDriver: true }),
-      ]),
-      Animated.timing(lineOpacity, { toValue: 0, duration: 400, delay: 200, useNativeDriver: true }),
-    ]).start();
-
-    const t = setTimeout(() => onDone?.(), 1500);
-    return () => clearTimeout(t);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  return (
-    <View style={styles.transitionOverlay} pointerEvents="none">
-      {/* Flash line */}
-      <Animated.View
-        style={[
-          styles.flashLine,
-          { opacity: lineOpacity, transform: [{ scaleX: lineScaleX }] },
-        ]}
-      />
-      {/* Falling bills */}
-      {BILLS.map((b, i) => (
-        <FallingBill key={i} {...b} />
-      ))}
-    </View>
-  );
-}
+// (money-drop transition removed)
 
 // ─────────────────────────────────────────────────────────────
 // Slide 0 – Intro (green)
 // ─────────────────────────────────────────────────────────────
-function IntroSlide({ active, onGetStarted, transitioning, topInset }) {
+function IntroSlide({ active, onGetStarted, topInset }) {
   const eyebrow = useRef(new Animated.Value(0)).current;
   const heading = useRef(new Animated.Value(0)).current;
   const body    = useRef(new Animated.Value(0)).current;
@@ -247,7 +173,6 @@ function IntroSlide({ active, onGetStarted, transitioning, topInset }) {
         <Animated.View style={fadeSlide(cta, 20)}>
           <TouchableOpacity
             activeOpacity={0.88}
-            disabled={transitioning}
             onPress={onGetStarted}
             style={styles.introCtaTouch}
           >
@@ -584,7 +509,6 @@ function SettleSlide({ active }) {
 export default function LandingScreen({ navigation }) {
   const insets = useSafeAreaInsets();
   const [currentSlide, setCurrentSlide] = useState(0);
-  const [transitioning, setTransitioning]   = useState(false);
   const currentSlideRef = useRef(0);
   const slideAnim       = useRef(new Animated.Value(0)).current;
   const goToRef         = useRef(null);
@@ -631,19 +555,11 @@ export default function LandingScreen({ navigation }) {
     })
   ).current;
 
-  const handleHowItWorks = () => {
-    if (transitioning) return;
-    setTransitioning(true);
-  };
-
-  const handleTransitionDone = () => {
-    goTo(1);
-    setTransitioning(false);
-  };
+  const handleHowItWorks = () => goTo(1);
 
   const handleNext = () => {
     if (currentSlide < NUM_SLIDES - 1) goTo(currentSlide + 1);
-    else navigateOnce('PhoneAuth');
+    else navigateOnce('AuthChoice');
   };
 
   // Dots and labels are for feature slides (1-3)
@@ -671,7 +587,6 @@ export default function LandingScreen({ navigation }) {
             <IntroSlide
               active={currentSlide === 0}
               onGetStarted={handleHowItWorks}
-              transitioning={transitioning}
               topInset={insets.top}
             />
           </View>
@@ -699,13 +614,11 @@ export default function LandingScreen({ navigation }) {
           </TouchableOpacity>
           <Text style={styles.footerNote}>
             Already have an account?{'  '}
-            <Text style={styles.footerNoteAccent} onPress={() => navigateOnce('Login')}>Sign In</Text>
+            <Text style={styles.footerNoteAccent} onPress={() => navigateOnce('Login')}>Sign in</Text>
           </Text>
         </View>
       )}
 
-      {/* Money drop transition overlay */}
-      {transitioning && <MoneyDropTransition onDone={handleTransitionDone} />}
     </View>
   );
 }

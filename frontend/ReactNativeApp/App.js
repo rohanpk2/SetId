@@ -26,6 +26,7 @@ import { startTimer, endTimer, markEvent } from './src/utils/performance';
 import OfflineBanner from './src/components/OfflineBanner';
 // Import critical screens immediately
 import LandingScreen from './src/screens/LandingScreen';
+import AuthChoiceScreen from './src/screens/AuthChoiceScreen';
 import PhoneAuthScreen from './src/screens/PhoneAuthScreen';
 import VerifyOTPScreen from './src/screens/VerifyOTPScreen';
 import PhoneLoginScreen from './src/screens/PhoneLoginScreen';
@@ -54,6 +55,11 @@ function AuthNavigator() {
       initialRouteName="Landing"
     >
       <AuthStack.Screen name="Landing" component={LandingScreen} />
+      <AuthStack.Screen
+        name="AuthChoice"
+        component={AuthChoiceScreen}
+        options={{ animation: 'slide_from_right' }}
+      />
       <AuthStack.Screen
         name="Login"
         component={PhoneLoginScreen}

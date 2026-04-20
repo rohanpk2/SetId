@@ -158,7 +158,7 @@ export default function PhoneLoginScreen({ navigation, route }) {
             >
               <MaterialIcons name="arrow-back" size={24} color={colors.secondary} />
             </TouchableOpacity>
-            <Text style={styles.brandTitle}>WealthSplit</Text>
+            <Text style={styles.brandTitle}>Settld</Text>
             <View style={styles.topBarSpacer} />
           </View>
           <View style={styles.headerDivider} />
@@ -207,7 +207,7 @@ export default function PhoneLoginScreen({ navigation, route }) {
             <View style={styles.infoRow}>
               <MaterialIcons name="info-outline" size={18} color={colors.outline} style={styles.infoIcon} />
               <Text style={styles.infoText}>
-                WealthSplit will send a one-time SMS code to verify your identity. Standard carrier
+                Settld will send a one-time SMS code to verify your identity. Standard carrier
                 fees may apply.
               </Text>
             </View>

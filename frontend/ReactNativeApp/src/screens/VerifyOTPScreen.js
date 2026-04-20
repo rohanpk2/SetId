@@ -18,6 +18,7 @@ import { authApi, unwrap, ApiError } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 
 const COOLDOWN_SEC = 45;
+const OTP_LENGTH = 6;
 
 function mapVerifyError(code, fallback) {
   const map = {
@@ -47,6 +48,7 @@ export default function VerifyOTPScreen({ navigation, route }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [cooldown, setCooldown] = useState(0);
+  const [isInputFocused, setIsInputFocused] = useState(false);
 
   useEffect(() => {
     const t = setTimeout(() => inputRef.current?.focus(), 400);
@@ -64,7 +66,7 @@ export default function VerifyOTPScreen({ navigation, route }) {
   const otpIntent = mode === 'login' ? 'login' : 'signup';
 
   const onVerify = async () => {
-    if (code.length !== 6 || loading || !phone) return;
+    if (code.length !== OTP_LENGTH || loading || !phone) return;
     if (mode === 'signup' && !firstName.trim()) return;
     setLoading(true);
     setError(null);
@@ -114,13 +116,13 @@ export default function VerifyOTPScreen({ navigation, route }) {
   };
 
   const onChangeCode = (t) => {
-    const digits = t.replace(/\D/g, '').slice(0, 6);
+    const digits = t.replace(/\D/g, '').slice(0, OTP_LENGTH);
     setCode(digits);
     setError(null);
   };
 
   const canVerify =
-    code.length === 6 && !loading && (mode === 'login' || Boolean(firstName.trim()));
+    code.length === OTP_LENGTH && !loading && (mode === 'login' || Boolean(firstName.trim()));
 
   const masked = useCallback(() => {
     if (!phone || phone.length < 4) return phone;
@@ -149,7 +151,7 @@ export default function VerifyOTPScreen({ navigation, route }) {
           >
             <MaterialIcons name="arrow-back" size={24} color={colors.secondary} />
           </TouchableOpacity>
-          <Text style={styles.brandTitle}>WealthSplit</Text>
+          <Text style={styles.brandTitle}>Settld</Text>
           <View style={styles.headerSpacer} />
         </View>
         <View style={styles.headerDivider} />
@@ -176,18 +178,58 @@ export default function VerifyOTPScreen({ navigation, route }) {
           </View>
         ) : null}
 
-        <TextInput
-          ref={inputRef}
-          style={styles.otpInput}
-          value={code}
-          onChangeText={onChangeCode}
-          keyboardType="number-pad"
-          maxLength={6}
-          textContentType="oneTimeCode"
-          autoComplete="sms-otp"
-          placeholder="000000"
-          placeholderTextColor={`${colors.outlineVariant}80`}
-        />
+        <TouchableOpacity
+          activeOpacity={1}
+          onPress={() => inputRef.current?.focus()}
+          style={styles.otpFieldTap}
+          accessibilityRole="button"
+          accessibilityLabel="Enter verification code"
+        >
+          <View style={styles.otpSlotsRow}>
+            {Array.from({ length: OTP_LENGTH }).map((_, index) => {
+              const digit = code[index] ?? '';
+              const isActive =
+                isInputFocused &&
+                ((code.length < OTP_LENGTH && index === code.length) ||
+                  (code.length === OTP_LENGTH && index === OTP_LENGTH - 1));
+
+              return (
+                <View
+                  key={index}
+                  style={[
+                    styles.otpSlot,
+                    digit && styles.otpSlotFilled,
+                    isActive && styles.otpSlotActive,
+                    error && styles.otpSlotError,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.otpSlotText,
+                      !digit && styles.otpSlotPlaceholder,
+                    ]}
+                  >
+                    {digit || ''}
+                  </Text>
+                </View>
+              );
+            })}
+          </View>
+
+          <TextInput
+            ref={inputRef}
+            style={styles.hiddenOtpInput}
+            value={code}
+            onChangeText={onChangeCode}
+            onFocus={() => setIsInputFocused(true)}
+            onBlur={() => setIsInputFocused(false)}
+            keyboardType="number-pad"
+            maxLength={OTP_LENGTH}
+            textContentType="oneTimeCode"
+            autoComplete="sms-otp"
+            caretHidden
+          />
+        </TouchableOpacity>
 
         {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
@@ -301,15 +343,53 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
     lineHeight: 20,
   },
-  otpInput: {
-    fontFamily: 'Manrope_800ExtraBold',
-    fontSize: 36,
-    letterSpacing: 10,
-    color: colors.onSurface,
-    paddingVertical: spacing.lg,
+  otpFieldTap: {
+    position: 'relative',
     marginBottom: spacing.lg,
-    borderBottomWidth: 2,
-    borderBottomColor: colors.surfaceContainerHigh,
+  },
+  otpSlotsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+  otpSlot: {
+    flex: 1,
+    height: 64,
+    borderRadius: radii.lg,
+    backgroundColor: colors.surfaceContainerLow,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  otpSlotFilled: {
+    backgroundColor: colors.surfaceContainerLowest,
+    borderColor: `${colors.secondary}22`,
+  },
+  otpSlotActive: {
+    borderColor: colors.secondary,
+    backgroundColor: colors.surfaceContainerLowest,
+  },
+  otpSlotError: {
+    borderColor: '#E2A7A3',
+    backgroundColor: '#FFF8F7',
+  },
+  otpSlotText: {
+    fontFamily: 'Manrope_800ExtraBold',
+    fontSize: 28,
+    lineHeight: 32,
+    color: colors.onSurface,
+    textAlign: 'center',
+  },
+  otpSlotPlaceholder: {
+    color: colors.outlineVariant,
+    opacity: 0.5,
+  },
+  hiddenOtpInput: {
+    position: 'absolute',
+    opacity: 0,
+    width: 1,
+    height: 1,
   },
   errorText: {
     fontFamily: 'Inter_500Medium',
