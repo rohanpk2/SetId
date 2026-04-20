@@ -35,7 +35,23 @@ class Settings(BaseSettings):
 
     UPLOAD_DIR: str = "./uploads"
 
-    CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
+    # Explicit origin allow-list. Overridable via env as a JSON array.
+    # Anything served from the `settld.live` family of hosts (app, pay, www,
+    # marketing, etc.) should be allowed out of the box so we don't 400 every
+    # OPTIONS preflight from a new subdomain.
+    CORS_ORIGINS: list[str] = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "https://settld.live",
+        "https://www.settld.live",
+        "https://app.settld.live",
+        "https://pay.settld.live",
+    ]
+
+    # Regex matched against the `Origin` header for credentialed requests that
+    # come from dynamically-named subdomains (preview deploys, staging, etc.).
+    # Must be a full-string regex. Leave empty to disable.
+    CORS_ORIGIN_REGEX: str = r"https://[a-z0-9-]+\.settld\.live"
 
     # Apple Sign In
     APPLE_TEAM_ID: str = ""

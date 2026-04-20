@@ -99,6 +99,10 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
+    # Accept any `*.settld.live` subdomain (staging/preview deploys) without
+    # needing to add each one to CORS_ORIGINS explicitly. Leaving the regex
+    # empty disables this branch.
+    allow_origin_regex=settings.CORS_ORIGIN_REGEX or None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
