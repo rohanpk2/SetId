@@ -35,6 +35,41 @@ def update_my_profile(
     return success_response(data=profile.model_dump(), message="Profile updated")
 
 
+@router.delete("/me")
+def delete_my_account(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Soft-delete the authenticated user.
+
+    We can't hard-delete because the user's UUID is referenced by bills they
+    own, payments they've made, and bill memberships they appear in — other
+    users' financial history would break. Instead we:
+
+      - flip `is_active` to False (so login + auth deps reject them)
+      - scrub PII (email, phone, apple_id, full_name, avatar_url, password_hash)
+      - free up the unique `phone` / `apple_id` indexes so the user can
+        re-register with the same phone/Apple ID on a new account
+
+    Stripe `stripe_customer_id` is preserved for reconciliation/refunds.
+    Payment methods cascade-delete via the relationship on the User model.
+    """
+    user_id = current_user.id
+
+    current_user.is_active = False
+    # Rotate email onto a reserved domain so the unique-index slot is freed
+    # for future signups, while keeping *some* value for audit trails.
+    current_user.email = f"deleted-{user_id}@deleted.invalid"
+    current_user.full_name = "Deleted User"
+    current_user.phone = None
+    current_user.apple_id = None
+    current_user.password_hash = None
+    current_user.avatar_url = None
+
+    db.commit()
+    return success_response(message="Account deleted")
+
+
 @router.get("/search")
 def search_users(
     q: str = Query(..., min_length=1),

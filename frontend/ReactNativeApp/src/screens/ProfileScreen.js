@@ -22,6 +22,7 @@ export default function ProfileScreen() {
   const { user, logout } = useAuth();
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [deleting, setDeleting] = useState(false);
 
   const loadProfile = useCallback(async () => {
     try {
@@ -58,6 +59,38 @@ export default function ProfileScreen() {
       { text: 'Cancel', style: 'cancel' },
       { text: 'Log out', style: 'destructive', onPress: () => logout() },
     ]);
+  };
+
+  const handleDeleteAccount = () => {
+    Alert.alert(
+      'Delete account?',
+      'This permanently removes your account. Your personal details will be wiped and you\'ll be signed out. Bills and payments you were part of will remain for the other members involved.\n\nThis cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            if (deleting) return;
+            setDeleting(true);
+            try {
+              await usersApi.deleteAccount();
+              // logout clears cached state + token and flips the RootNavigator
+              // back to the auth stack.
+              await logout();
+            } catch (err) {
+              setDeleting(false);
+              Alert.alert(
+                'Could not delete account',
+                err?.error?.message
+                  ?? err?.message
+                  ?? 'Something went wrong. Please try again.',
+              );
+            }
+          },
+        },
+      ],
+    );
   };
 
   return (
@@ -119,6 +152,26 @@ export default function ProfileScreen() {
                 <MaterialIcons name="logout" size={20} color={colors.onError} />
                 <Text style={styles.logoutText}>Log out</Text>
               </LinearGradient>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              activeOpacity={0.85}
+              onPress={handleDeleteAccount}
+              disabled={deleting}
+              style={[styles.deleteBtn, deleting && styles.deleteBtnDisabled]}
+            >
+              {deleting ? (
+                <ActivityIndicator size="small" color={colors.error} />
+              ) : (
+                <>
+                  <MaterialIcons
+                    name="delete-outline"
+                    size={20}
+                    color={colors.error}
+                  />
+                  <Text style={styles.deleteText}>Delete account</Text>
+                </>
+              )}
             </TouchableOpacity>
           </>
         )}
@@ -236,5 +289,23 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: colors.onError,
+  },
+  deleteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    marginTop: 12,
+  },
+  deleteBtnDisabled: {
+    opacity: 0.6,
+  },
+  deleteText: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.error,
+    textDecorationLine: 'underline',
   },
 });
