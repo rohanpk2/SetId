@@ -33,16 +33,42 @@ import PhoneLoginScreen from './src/screens/PhoneLoginScreen';
 import OnboardingScreen from './src/screens/OnboardingScreen';
 import MainTabNavigator from './src/navigation/MainTabNavigator';
 import LazyScreen from './src/components/LazyScreen';
+// Eager import: expo-camera + React.lazy/Metro code-splitting often breaks native module
+// resolution ("unknown module", lazy default export undefined). Keep this screen in the main bundle.
+import ScanReceiptScreen from './src/screens/ScanReceiptScreen';
 
 // Lazy load non-critical screens to improve initial startup
 const BillSplitScreen = React.lazy(() => import('./src/screens/BillSplitScreen'));
 const ReviewPaymentScreen = React.lazy(() => import('./src/screens/ReviewPaymentScreen'));
 const ActivityDetailScreen = React.lazy(() => import('./src/screens/ActivityDetailScreen'));
-const ScanReceiptScreen = React.lazy(() => import('./src/screens/ScanReceiptScreen'));
 const FundsCollectedScreen = React.lazy(() => import('./src/screens/FundsCollectedScreen'));
 const NotificationsScreen = React.lazy(() => import('./src/screens/NotificationsScreen'));
 const JoinBillScreen = React.lazy(() => import('./src/screens/JoinBillScreen'));
 const AddPaymentMethodScreen = React.lazy(() => import('./src/screens/AddPaymentMethodScreen'));
+
+// Stable components for lazy screens — inline `component={() => ...}` identities change every
+// MainNavigator render and trigger React Navigation warnings + unnecessary remounts.
+function BillSplitStackScreen(props) {
+  return <LazyScreen component={BillSplitScreen} {...props} />;
+}
+function ReviewPaymentStackScreen(props) {
+  return <LazyScreen component={ReviewPaymentScreen} {...props} />;
+}
+function ActivityDetailStackScreen(props) {
+  return <LazyScreen component={ActivityDetailScreen} {...props} />;
+}
+function FundsCollectedStackScreen(props) {
+  return <LazyScreen component={FundsCollectedScreen} {...props} />;
+}
+function NotificationsStackScreen(props) {
+  return <LazyScreen component={NotificationsScreen} {...props} />;
+}
+function JoinBillStackScreen(props) {
+  return <LazyScreen component={JoinBillScreen} {...props} />;
+}
+function AddPaymentMethodStackScreen(props) {
+  return <LazyScreen component={AddPaymentMethodScreen} {...props} />;
+}
 
 const AuthStack = createNativeStackNavigator();
 const MainStack = createNativeStackNavigator();
@@ -85,42 +111,42 @@ function MainNavigator() {
       <MainStack.Screen name="MainTabs" component={MainTabNavigator} />
       <MainStack.Screen
         name="BillSplit"
-        component={(props) => <LazyScreen component={BillSplitScreen} {...props} />}
+        component={BillSplitStackScreen}
         options={{ animation: 'slide_from_right' }}
       />
       <MainStack.Screen
         name="ReviewPayment"
-        component={(props) => <LazyScreen component={ReviewPaymentScreen} {...props} />}
+        component={ReviewPaymentStackScreen}
         options={{ animation: 'slide_from_right' }}
       />
       <MainStack.Screen
         name="ActivityDetail"
-        component={(props) => <LazyScreen component={ActivityDetailScreen} {...props} />}
+        component={ActivityDetailStackScreen}
         options={{ animation: 'slide_from_right' }}
       />
       <MainStack.Screen
         name="ScanReceipt"
-        component={(props) => <LazyScreen component={ScanReceiptScreen} {...props} />}
+        component={ScanReceiptScreen}
         options={{ animation: 'slide_from_bottom' }}
       />
       <MainStack.Screen
         name="FundsCollected"
-        component={(props) => <LazyScreen component={FundsCollectedScreen} {...props} />}
+        component={FundsCollectedStackScreen}
         options={{ animation: 'slide_from_right' }}
       />
       <MainStack.Screen
         name="Notifications"
-        component={(props) => <LazyScreen component={NotificationsScreen} {...props} />}
+        component={NotificationsStackScreen}
         options={{ animation: 'slide_from_right' }}
       />
       <MainStack.Screen
         name="JoinBill"
-        component={(props) => <LazyScreen component={JoinBillScreen} {...props} />}
+        component={JoinBillStackScreen}
         options={{ animation: 'slide_from_right' }}
       />
       <MainStack.Screen
         name="AddPaymentMethod"
-        component={(props) => <LazyScreen component={AddPaymentMethodScreen} {...props} />}
+        component={AddPaymentMethodStackScreen}
         options={{ animation: 'slide_from_bottom' }}
       />
     </MainStack.Navigator>

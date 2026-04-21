@@ -11,7 +11,13 @@ import {
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { CardField, useStripe, usePlatformPay, PlatformPayButton } from '@stripe/stripe-react-native';
+import {
+  CardField,
+  useStripe,
+  usePlatformPay,
+  PlatformPayButton,
+  PlatformPay,
+} from '@stripe/stripe-react-native';
 import { colors, radii } from '../theme';
 import { paymentMethods as paymentMethodsApi } from '../services/api';
 
@@ -163,8 +169,8 @@ export default function AddPaymentMethodScreen({ navigation, route }) {
           <View style={styles.applePaySection}>
             <PlatformPayButton
               onPress={handleApplePay}
-              type={PlatformPayButton.Type.SetUp}
-              appearance={PlatformPayButton.Appearance.Black}
+              type={PlatformPay.ButtonType.SetUp}
+              appearance={PlatformPay.ButtonStyle.Black}
               borderRadius={28}
               style={styles.applePayButton}
               disabled={processing}
