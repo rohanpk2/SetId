@@ -2,12 +2,23 @@ import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
+from app.services.receipt_patterns import (
+    BALANCE_DUE_RE,
+    SUBTOTAL_FUZZY_RE,
+    TAX_FUZZY_RE,
+    TOTAL_FUZZY_RE,
+)
+
 
 PRICE_RE = re.compile(r"(?<!\d)(\d+\.\d{2})(?!\d)")
 IGNORE_RE = re.compile(r"\b(visa|mastercard|amex|discover|change|cash)\b", re.IGNORECASE)
-TOTAL_WORD_RE = re.compile(r"\btotal\b", re.IGNORECASE)
-SUBTOTAL_WORD_RE = re.compile(r"\bsubtotal\b", re.IGNORECASE)
-TAX_WORD_RE = re.compile(r"\btax\b", re.IGNORECASE)
+
+# Re-exported with the old names so existing call sites inside this module
+# keep reading naturally, but matching is now fuzzy (handles OCR misspellings
+# like "SUBTOAL" and compound labels like "COMPLETE SUBTOTAL").
+TOTAL_WORD_RE = TOTAL_FUZZY_RE
+SUBTOTAL_WORD_RE = SUBTOTAL_FUZZY_RE
+TAX_WORD_RE = TAX_FUZZY_RE
 
 QTY_X_RE = re.compile(r"\b(?:x\s*(\d+)|(\d+)\s*x)\b", re.IGNORECASE)  # x2 / 2x / x 2
 QTY_AT_RE = re.compile(r"\b(\d+)\s*@\s*(\d+\.\d{2})\b", re.IGNORECASE)  # 2 @ 5.99
@@ -33,7 +44,12 @@ def _extract_price_from_row(row: list[str]) -> Decimal | None:
 
 
 def _is_totals_row(row_text: str) -> bool:
-    return bool(TOTAL_WORD_RE.search(row_text) or SUBTOTAL_WORD_RE.search(row_text) or TAX_WORD_RE.search(row_text))
+    return bool(
+        TOTAL_WORD_RE.search(row_text)
+        or SUBTOTAL_WORD_RE.search(row_text)
+        or TAX_WORD_RE.search(row_text)
+        or BALANCE_DUE_RE.search(row_text)
+    )
 
 
 def _extract_quantity_and_unit(row_text: str) -> tuple[int | None, Decimal | None]:
@@ -120,10 +136,19 @@ def parse_structured_rows(rows: list[list[str]]) -> dict:
         if _is_totals_row(row_text):
             if price is None:
                 continue
+            # Order matters: check SUBTOTAL before TOTAL because `subtotal`
+            # also matches the fuzzy `total` regex. Same for BALANCE_DUE —
+            # "balance due" shouldn't overwrite an already-captured subtotal.
             if TAX_WORD_RE.search(row_text):
                 tax = price
             elif SUBTOTAL_WORD_RE.search(row_text):
                 subtotal = price
+            elif BALANCE_DUE_RE.search(row_text):
+                # "Balance due" / "amount due" / "pay this amount" are how
+                # many receipts print the final total. Map them to `total`
+                # if we haven't already seen an explicit TOTAL row.
+                if total is None:
+                    total = price
             elif TOTAL_WORD_RE.search(row_text):
                 total = price
             continue

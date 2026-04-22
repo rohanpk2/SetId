@@ -1,6 +1,8 @@
 import re
 from decimal import Decimal
 
+from app.services.receipt_patterns import is_label_like
+
 
 MONEY_QUANTIZE = Decimal("0.01")
 TOLERANCE = Decimal("0.02")
@@ -15,6 +17,72 @@ def _to_decimal(value) -> Decimal | None:
 
 def _quantize(value: Decimal) -> Decimal:
     return value.quantize(MONEY_QUANTIZE)
+
+
+def _drop_label_duplicates(
+    items: list[dict],
+    target_subtotal: Decimal,
+) -> tuple[list[dict], list[str]]:
+    """When items sum over the printed subtotal, try to find and drop summary
+    labels that the LLM duplicated as items.
+
+    Strategy: group items by identical `total_price`. For any group with 2+
+    members, if at least one member has a "label-like" name (subtotal,
+    complete, balance due, etc.), drop those label-y members one at a time
+    until either the group shrinks to a single item OR the overall sum
+    reaches `target_subtotal` within tolerance.
+
+    This is conservative — it only drops items that both (a) share a price
+    with another item and (b) look like labels. Never drops every item in a
+    group.
+
+    Returns `(new_items, notes)`. `notes` is human-readable audit trail
+    appended to the validator's `warnings` array.
+    """
+    notes: list[str] = []
+    # Group indices by price
+    by_price: dict[Decimal, list[int]] = {}
+    for idx, item in enumerate(items):
+        price = _to_decimal(item.get("total_price"))
+        if price is None:
+            continue
+        by_price.setdefault(price, []).append(idx)
+
+    drop: set[int] = set()
+    for price, idxs in by_price.items():
+        if len(idxs) < 2:
+            continue
+        # Rank candidates: label-like first, then shortest name (label rows
+        # are usually short — "subtotal" vs "12 oz ribeye steak").
+        ranked = sorted(
+            idxs,
+            key=lambda i: (
+                not is_label_like(items[i].get("name", "")),  # label_like first
+                len((items[i].get("name") or "")),            # shorter first within each group
+            ),
+        )
+        # Drop label-like duplicates but never ALL copies — keep the last one
+        # standing even if every copy happens to look label-y.
+        for cand in ranked[:-1]:
+            if not is_label_like(items[cand].get("name", "")):
+                # No more label-shaped duplicates to drop in this group.
+                break
+            drop.add(cand)
+            notes.append(
+                f"Dropped duplicate label row '{items[cand].get('name','')}' at ${price}"
+            )
+            # Short-circuit: if dropping this one already reconciles the
+            # total, stop.
+            remaining = sum(
+                _to_decimal(items[j].get("total_price")) or Decimal("0.00")
+                for j in range(len(items))
+                if j not in drop
+            )
+            if abs(_quantize(remaining) - target_subtotal) <= TOLERANCE:
+                return [it for j, it in enumerate(items) if j not in drop], notes
+
+    new_items = [it for j, it in enumerate(items) if j not in drop]
+    return new_items, notes
 
 
 def validate_parsed_receipt(
@@ -64,6 +132,28 @@ def validate_parsed_receipt(
         )
 
     items_sum = _quantize(items_sum)
+
+    # When the printed subtotal is known and the items sum OVER it, the most
+    # common cause is the LLM emitting a summary label (subtotal / complete /
+    # balance due) as a duplicate line item. Try to reconcile by dropping
+    # label-like duplicates that share a price with a real item. If the math
+    # still doesn't work we fall through and just warn, leaving the items
+    # untouched.
+    if subtotal_dec is not None and items_sum - subtotal_dec > TOLERANCE:
+        deduped, dedupe_notes = _drop_label_duplicates(normalized_items, subtotal_dec)
+        if dedupe_notes:
+            new_sum = _quantize(
+                sum(
+                    (it["total_price"] for it in deduped),
+                    Decimal("0.00"),
+                )
+            )
+            # Only accept the dedupe if it actually improved things.
+            if abs(new_sum - subtotal_dec) < abs(items_sum - subtotal_dec):
+                normalized_items = deduped
+                items_sum = new_sum
+                warnings.extend(dedupe_notes)
+
     if subtotal_dec is None:
         subtotal_dec = items_sum
         warnings.append("Subtotal derived from items")

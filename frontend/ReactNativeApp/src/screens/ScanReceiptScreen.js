@@ -433,7 +433,7 @@ export default function ScanReceiptScreen({ navigation, route }) {
                   >
                     <MaterialIcons name="camera-alt" size={22} color={colors.onSecondary} />
                     <Text style={styles.actionTextPrimary}>
-                      {cameraReady ? 'Add photo' : 'Starting camera…'}
+                      {cameraReady ? 'Scan Receipt' : 'Starting camera…'}
                     </Text>
                   </LinearGradient>
                 </TouchableOpacity>

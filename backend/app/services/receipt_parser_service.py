@@ -21,10 +21,25 @@ from app.models.receipt_item import ReceiptItem
 from app.schemas.receipt import ParsedReceipt, ParsedReceiptItem
 from app.services.receipt_feedback_service import record_item_edit_feedback
 from app.services.receipt_item_normalizer import normalize_cleanup_payload
+# Shared fuzzy regexes for summary labels (subtotal / total / tax / balance due).
+# Keeping these in one module ensures the preparser and the defensive post-LLM
+# filter agree on what counts as a label — otherwise misspellings can leak
+# through one layer and show up as phantom line items.
+from app.services.receipt_patterns import (
+    BALANCE_DUE_RE,
+    SUBTOTAL_FUZZY_RE,
+    TAX_FUZZY_RE,
+    TOTAL_FUZZY_RE,
+)
 from app.services.receipt_preparser import parse_structured_rows
 from app.services.receipt_validator import validate_parsed_receipt
 
 MONEY_QUANTIZE = Decimal("0.01")
+
+# Defensive filter applied AFTER the LLM cleanup step. Anything the LLM
+# returned whose name matches any of these patterns gets dropped before
+# we persist line items.
+
 NON_ITEM_PATTERNS = (
     re.compile(r"\bvisa\b", re.IGNORECASE),
     re.compile(r"\bmastercard\b", re.IGNORECASE),
@@ -34,12 +49,16 @@ NON_ITEM_PATTERNS = (
     re.compile(r"\btrace\b", re.IGNORECASE),
     re.compile(r"\bappr\b", re.IGNORECASE),
     re.compile(r"\bauth\b", re.IGNORECASE),
-    re.compile(r"\bsubtotal\b", re.IGNORECASE),
-    re.compile(r"\btotal\b", re.IGNORECASE),
-    re.compile(r"\btax\b", re.IGNORECASE),
     re.compile(r"\btip\b", re.IGNORECASE),
-    re.compile(r"\bchange\b", re.IGNORECASE),
+    re.compile(r"\bgratuity\b", re.IGNORECASE),
+    re.compile(r"\bservice\s+(?:charge|fee)\b", re.IGNORECASE),
+    re.compile(r"\bchange(?:\s+due)?\b", re.IGNORECASE),
     re.compile(r"\bapproval\b", re.IGNORECASE),
+    # Summary anchors (fuzzy, catches misspellings + compound labels).
+    SUBTOTAL_FUZZY_RE,
+    TOTAL_FUZZY_RE,
+    TAX_FUZZY_RE,
+    BALANCE_DUE_RE,
 )
 ADDRESS_PATTERN = re.compile(
     r"\b(?:street|st|avenue|ave|road|rd|boulevard|blvd|drive|dr|lane|ln|way)\b",
@@ -106,19 +125,56 @@ OCR_RESPONSE_FORMAT = {
 }
 
 CLEANUP_SYSTEM_PROMPT = """
-You are a receipt cleanup model.
-Your job is to normalize structured OCR data into receipt JSON.
-Rules:
-- Return valid JSON only. No markdown, no prose, no explanations.
-- Never hallucinate missing items or prices.
-- Use only evidence present in the provided structured input.
-- If a value cannot be determined confidently, return null for nullable fields.
-- For each item, total_price must be the full line total.
-- unit_price may be null when not explicitly derivable from the input.
-- modifiers must be an array of strings and may be empty.
-- confidence must be a number between 0 and 1 representing your confidence in the full output.
-- Ignore addresses, dates, timestamps, payment metadata, card digits, approval codes, batch numbers,
-  trace numbers, and other non-purchased lines unless they are clearly subtotal, tax, or total.
+You are a receipt cleanup model. Return valid JSON only — no markdown, no prose, no
+explanations.
+
+An "item" is a purchased product or dish. The `items` array must contain ONLY
+purchased items. If a line is any of the following, it is NOT an item — it either
+maps to a dedicated top-level field (`subtotal` / `tax` / `total`) or is dropped
+entirely:
+
+  - subtotal, sub-total, sub total, subttl, subtoal, running subtotal, complete subtotal
+  - total, grand total, net total, running total, total due
+  - balance due, amount due, amount owed, amt due, pay this amount, to pay, please pay, charge
+  - tax, sales tax, vat, gst, hst
+  - tip, gratuity, service charge, service fee
+  - change, change due, cash, credit, debit, card, visa, mastercard, amex, discover
+  - approval, auth, batch, trace, merchant id, terminal id
+  - addresses, phone numbers, dates, timestamps, "thank you" messages, loyalty codes
+
+Critical rules:
+  - If the same price appears on multiple lines and one line is a summary label
+    (subtotal / total / balance / complete / running / grand / net), the price
+    belongs in the corresponding top-level field, NOT duplicated into `items`.
+  - Map `balance due` / `amount due` / `pay this amount` into the `total` field
+    when no separate `total` line is present.
+  - Never hallucinate items or prices. Use only evidence in the provided input.
+  - For each item, `total_price` is the full line total. `unit_price` may be null
+    when not explicitly derivable. `modifiers` is an array of strings (may be empty).
+  - `confidence` is a number in [0, 1].
+  - If a value cannot be determined confidently, return null for nullable fields.
+
+Example input (tab-separated OCR rows):
+  12 OZ STRIP\t26.99
+  COMPLETE SUBTOTAL\t26.99
+  SUBTOTAL\t26.99
+  TAX\t3.17
+  BALANCE DUE\t30.16
+
+Correct output:
+  {
+    "merchant_name": null,
+    "subtotal": 26.99,
+    "tax": 3.17,
+    "total": 30.16,
+    "items": [
+      {"name": "12 OZ STRIP", "quantity": 1, "unit_price": 26.99, "total_price": 26.99, "modifiers": []}
+    ],
+    "confidence": 0.9
+  }
+
+Notice: the COMPLETE SUBTOTAL and SUBTOTAL lines do NOT appear in `items` even
+though they share a price with a real item. They are summary labels.
 """.strip()
 
 CLEANUP_RESPONSE_FORMAT = {
