@@ -87,12 +87,13 @@ class StripeConnectService:
         """Return the user's `acct_...` id, creating an Express account if
         they don't have one yet.
 
-        `service_agreement="recipient"` tells Stripe this account is a
-        fund recipient only (not accepting direct card payments from the
-        public). That keeps onboarding short — they just need identity
-        verification + a payout method — and is the right fit for our
-        destination-charge flow where the platform is the merchant of
-        record on each PaymentIntent.
+        We let Stripe default to the `full` service agreement (omitting
+        `tos_acceptance` entirely). Stripe explicitly blocks the
+        `recipient` agreement for US-platform + US-account — it's only
+        valid for cross-border setups. `full` is also what we actually
+        want: our hosts are Connect merchants of record for funds flowing
+        into their balance via destination charges, so they need to
+        accept the full Express agreement during onboarding.
         """
         if user.stripe_account_id:
             return user.stripe_account_id
@@ -119,7 +120,6 @@ class StripeConnectService:
                     "mcc": "7299",
                 },
                 metadata={"user_id": str(user.id)},
-                tos_acceptance={"service_agreement": "recipient"},
             )
         except stripe.error.StripeError as e:
             logger.exception("stripe_connect_account_create_failed")
