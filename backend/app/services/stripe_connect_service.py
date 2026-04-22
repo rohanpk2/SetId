@@ -94,11 +94,67 @@ class StripeConnectService:
         `submit_payout_setup`). See Stripe's "Custom account onboarding"
         docs for the regulatory underpinning.
 
+        If the user already has an account id but it's NOT a Custom
+        account (e.g. left over from an earlier Express-based attempt),
+        Stripe blocks platform-side writes to `individual` and
+        `tos_acceptance` with a PermissionError. We detect that here and
+        transparently recycle the stale id so the next onboarding runs
+        cleanly. Same for accounts the platform admin deleted in the
+        Stripe dashboard — they return InvalidRequestError on retrieve.
+
         The account row here is the skeleton; `submit_payout_setup`
         fills in identity + attaches the debit card + flips ToS.
         """
         if user.stripe_account_id:
-            return user.stripe_account_id
+            stale = False
+            try:
+                acct = stripe.Account.retrieve(user.stripe_account_id)
+                if getattr(acct, "type", None) == "custom":
+                    return user.stripe_account_id
+                logger.info(
+                    "stripe_connect_account_type_mismatch",
+                    extra={
+                        "user_id": str(user.id),
+                        "account_id": user.stripe_account_id,
+                        "type": getattr(acct, "type", None),
+                    },
+                )
+                stale = True
+            except stripe.error.PermissionError:
+                # Express account the platform can't touch any more.
+                logger.info(
+                    "stripe_connect_account_permission_error_recycling",
+                    extra={
+                        "user_id": str(user.id),
+                        "account_id": user.stripe_account_id,
+                    },
+                )
+                stale = True
+            except stripe.error.InvalidRequestError:
+                # Account was deleted in Stripe dashboard.
+                logger.info(
+                    "stripe_connect_account_missing_recycling",
+                    extra={
+                        "user_id": str(user.id),
+                        "account_id": user.stripe_account_id,
+                    },
+                )
+                stale = True
+            except stripe.error.StripeError as e:
+                # Any other API error: surface rather than silently
+                # orphaning the id.
+                logger.exception("stripe_connect_account_retrieve_failed")
+                raise StripeConnectError(
+                    "STRIPE_ERROR", self._safe_stripe_message(e)
+                )
+
+            if stale:
+                user.stripe_account_id = None
+                user.stripe_charges_enabled = False
+                user.stripe_payouts_enabled = False
+                user.stripe_details_submitted = False
+                self.db.commit()
+                self.db.refresh(user)
 
         email = user.email if not self._is_synthetic_email(user.email) else None
 
