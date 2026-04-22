@@ -45,6 +45,7 @@ const FundsCollectedScreen = React.lazy(() => import('./src/screens/FundsCollect
 const NotificationsScreen = React.lazy(() => import('./src/screens/NotificationsScreen'));
 const JoinBillScreen = React.lazy(() => import('./src/screens/JoinBillScreen'));
 const AddPaymentMethodScreen = React.lazy(() => import('./src/screens/AddPaymentMethodScreen'));
+const PayoutsScreen = React.lazy(() => import('./src/screens/PayoutsScreen'));
 
 // Stable components for lazy screens — inline `component={() => ...}` identities change every
 // MainNavigator render and trigger React Navigation warnings + unnecessary remounts.
@@ -68,6 +69,9 @@ function JoinBillStackScreen(props) {
 }
 function AddPaymentMethodStackScreen(props) {
   return <LazyScreen component={AddPaymentMethodScreen} {...props} />;
+}
+function PayoutsStackScreen(props) {
+  return <LazyScreen component={PayoutsScreen} {...props} />;
 }
 
 const AuthStack = createNativeStackNavigator();
@@ -148,6 +152,11 @@ function MainNavigator() {
         name="AddPaymentMethod"
         component={AddPaymentMethodStackScreen}
         options={{ animation: 'slide_from_bottom' }}
+      />
+      <MainStack.Screen
+        name="Payouts"
+        component={PayoutsStackScreen}
+        options={{ animation: 'slide_from_right' }}
       />
     </MainStack.Navigator>
   );

@@ -28,6 +28,29 @@ class User(Base):
     stripe_customer_id: Mapped[str | None] = mapped_column(
         String(255), nullable=True, unique=True, index=True
     )
+    # ─── Stripe Connect (host side — receiving payouts from guests) ─────
+    # Separate from `stripe_customer_id`, which represents the user as a
+    # guest paying bills. A user can be both: they host their own bills
+    # (Connect account) and pay into bills they're invited to (Customer).
+    stripe_account_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, unique=True
+    )
+    # Cached flags from the Connect account's `charges_enabled` /
+    # `payouts_enabled` / `details_submitted` fields. Refreshed on every
+    # `account.updated` webhook and on every status check. We read these
+    # inline (instead of hitting Stripe) on the hot path — e.g. when the
+    # guest is creating a PaymentIntent we decide in O(1) whether to
+    # attach `transfer_data.destination`.
+    stripe_charges_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    stripe_payouts_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    stripe_details_submitted: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -44,3 +67,4 @@ class User(Base):
     notifications = relationship("Notification", back_populates="user")
     sms_logs = relationship("SmsLog", back_populates="user")
     payment_methods = relationship("PaymentMethod", back_populates="user", cascade="all, delete-orphan")
+    payouts = relationship("Payout", back_populates="user", cascade="all, delete-orphan")

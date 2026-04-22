@@ -14,7 +14,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { colors, radii, shadows } from '../theme';
 import { useAuth } from '../contexts/AuthContext';
-import { users as usersApi } from '../services/api';
+import { users as usersApi, stripeConnect } from '../services/api';
 import LazyImage from '../components/LazyImage';
 
 /** Pretty-print a phone number, falling back to the raw value or an empty
@@ -32,12 +32,17 @@ function formatPhoneForDisplay(raw) {
   return raw;
 }
 
-export default function ProfileScreen() {
+export default function ProfileScreen({ navigation }) {
   const insets = useSafeAreaInsets();
   const { user, logout } = useAuth();
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState(false);
+  // Cached Connect status so the Payouts row shows the right color (red /
+  // yellow / green) without navigating into the Payouts screen. `null`
+  // while loading; `undefined` if the fetch failed (we degrade gracefully
+  // and just show the neutral state).
+  const [connectStatus, setConnectStatus] = useState(null);
 
   const loadProfile = useCallback(async () => {
     try {
@@ -48,17 +53,26 @@ export default function ProfileScreen() {
     }
   }, []);
 
+  const loadConnectStatus = useCallback(async () => {
+    try {
+      const res = await stripeConnect.getStatus();
+      setConnectStatus(res?.data ?? null);
+    } catch {
+      setConnectStatus(undefined);
+    }
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
       setLoading(true);
-      loadProfile().finally(() => {
+      Promise.all([loadProfile(), loadConnectStatus()]).finally(() => {
         if (!cancelled) setLoading(false);
       });
       return () => {
         cancelled = true;
       };
-    }, [loadProfile]),
+    }, [loadProfile, loadConnectStatus]),
   );
 
   const display = profile || user;
@@ -164,6 +178,53 @@ export default function ProfileScreen() {
                   </Text>
                 </View>
               </View>
+            </View>
+
+            {/* Payouts — routes the user into the PayoutsScreen which
+                handles onboarding + balance + instant cash-out. The small
+                badge here just hints at the current state. */}
+            <View style={styles.section}>
+              <Text style={styles.sectionLabel}>Payouts</Text>
+              <TouchableOpacity
+                activeOpacity={0.7}
+                onPress={() => navigation.navigate('Payouts')}
+                style={[styles.rowCard, shadows.card]}
+              >
+                <View style={styles.row}>
+                  <MaterialIcons
+                    name="account-balance-wallet"
+                    size={22}
+                    color={
+                      connectStatus?.payouts_enabled
+                        ? colors.secondary
+                        : connectStatus?.connected
+                          ? colors.tertiary
+                          : colors.onSurfaceVariant
+                    }
+                  />
+                  <View style={styles.payoutTextCol}>
+                    <Text style={styles.rowText}>Instant payouts</Text>
+                    <Text style={styles.payoutSubtitle}>
+                      {!connectStatus
+                        ? 'Check status'
+                        : !connectStatus.connected
+                          ? 'Not connected — tap to set up'
+                          : !connectStatus.details_submitted
+                            ? 'Finish onboarding'
+                            : !connectStatus.payouts_enabled
+                              ? 'Verification pending'
+                              : connectStatus.external_account_last4
+                                ? `Active · ${connectStatus.external_account_brand ?? 'Card'} •• ${connectStatus.external_account_last4}`
+                                : 'Payouts active'}
+                    </Text>
+                  </View>
+                  <MaterialIcons
+                    name="chevron-right"
+                    size={22}
+                    color={colors.onSurfaceVariant}
+                  />
+                </View>
+              </TouchableOpacity>
             </View>
 
             <TouchableOpacity activeOpacity={0.85} onPress={handleLogout}>
@@ -317,6 +378,15 @@ const styles = StyleSheet.create({
     fontFamily: 'Inter_600SemiBold',
     fontSize: 14,
     color: colors.onSurfaceVariant,
+  },
+  payoutTextCol: {
+    flex: 1,
+  },
+  payoutSubtitle: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 12,
+    color: colors.onSurfaceVariant,
+    marginTop: 2,
   },
   logoutBtn: {
     flexDirection: 'row',

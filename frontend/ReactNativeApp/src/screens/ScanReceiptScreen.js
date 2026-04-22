@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   Alert,
   ScrollView,
+  Image,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -99,6 +100,12 @@ export default function ScanReceiptScreen({ navigation, route }) {
   const [statusText, setStatusText] = useState('Line up the receipt, then tap Capture');
   const [parsedData, setParsedData] = useState(null);
   const [queuedImages, setQueuedImages] = useState([]);
+  // URI of the most recently captured still. While non-null, we render this
+  // frozen image in place of the live `CameraView` so the user can lower
+  // their phone after tapping capture — previously the live viewfinder
+  // stayed up during the 5-10s upload+parse, which felt like they had to
+  // keep holding the receipt in frame.
+  const [lastCaptureUri, setLastCaptureUri] = useState(null);
 
   useEffect(() => {
     if (!permission || permission.granted || autoRequestedPermission.current) return;
@@ -114,10 +121,10 @@ export default function ScanReceiptScreen({ navigation, route }) {
       return;
     }
     if (queuedImages.length === 1) {
-      setStatusText('1 page added. Capture another or process now.');
+      setStatusText('Captured. Tap Process to analyze, or add another page.');
       return;
     }
-    setStatusText(`${queuedImages.length} pages added. Ready to process.`);
+    setStatusText(`${queuedImages.length} pages captured. Ready to process.`);
   }, [parsedData, parsing, queuedImages.length, uploading]);
 
   const enqueueReceiptImage = useCallback((uri, mimeType = 'image/jpeg', fileName = 'receipt.jpg') => {
@@ -244,6 +251,9 @@ export default function ScanReceiptScreen({ navigation, route }) {
       setUploading(false);
       setParsing(false);
       setStatusText('Line up the receipt, then tap Capture');
+      // Unfreeze so the user can re-aim and retry — otherwise they'd be
+      // stuck staring at a frozen image with no obvious next step.
+      setLastCaptureUri(null);
       Alert.alert('Error', err?.message ?? err?.error?.message ?? 'Failed to process receipt');
     }
   }, [billId, navigation, queuedImages]);
@@ -260,12 +270,30 @@ export default function ScanReceiptScreen({ navigation, route }) {
       const ext = photo.format === 'png' ? 'png' : 'jpg';
       const mime = ext === 'png' ? 'image/png' : 'image/jpeg';
       enqueueReceiptImage(photo.uri, mime, `receipt-${Date.now()}.${ext}`);
+      // Freeze on the captured still so the user can lower their phone.
+      // This replaces the live `CameraView` in the render tree — the
+      // user sees exactly what got captured, and the UI switches to
+      // "Process / Add Page / Retake" actions.
+      setLastCaptureUri(photo.uri);
     } catch (err) {
       Alert.alert('Capture failed', err?.message ?? 'Could not take photo');
     } finally {
       setCapturing(false);
     }
   };
+
+  /** Drop the last queued image and unfreeze so the user can re-aim the
+   *  camera. Used by the "Retake" button on the frozen view. */
+  const retakeLastCapture = useCallback(() => {
+    setQueuedImages((prev) => prev.slice(0, -1));
+    setLastCaptureUri(null);
+  }, []);
+
+  /** Keep the captured image(s) in the queue but return to the live camera
+   *  so the user can capture another receipt page. */
+  const resumeCameraForNextPage = useCallback(() => {
+    setLastCaptureUri(null);
+  }, []);
 
   const pickFromGallery = async () => {
     try {
@@ -283,6 +311,10 @@ export default function ScanReceiptScreen({ navigation, route }) {
         asset.mimeType || 'image/jpeg',
         asset.fileName || `receipt-${Date.now()}.jpg`,
       );
+      // Show the picked image in the frozen viewer so the gallery path
+      // matches the camera-capture UX: user sees what they chose before
+      // tapping Process.
+      setLastCaptureUri(asset.uri);
     } catch (err) {
       Alert.alert('Error', err?.message ?? err?.error?.message ?? 'Failed to pick image');
     }
@@ -290,10 +322,26 @@ export default function ScanReceiptScreen({ navigation, route }) {
 
   const busy = uploading || parsing || capturing;
   const canUseCamera = permission?.granted;
+  // `frozen` = we're showing a still image instead of the live camera feed.
+  // Captured images live here during review + processing so the user can
+  // put their phone down.
+  const frozen = Boolean(lastCaptureUri);
 
   return (
     <View style={styles.root}>
-      {canUseCamera ? (
+      {frozen ? (
+        // Render the captured image where the camera feed used to be. We
+        // dim it slightly with the same scrim the camera view has, so the
+        // bottom sheet + top bar readability is identical in both states.
+        <>
+          <Image
+            source={{ uri: lastCaptureUri }}
+            style={StyleSheet.absoluteFillObject}
+            resizeMode="cover"
+          />
+          <View style={styles.frozenDim} pointerEvents="none" />
+        </>
+      ) : canUseCamera ? (
         <CameraView
           ref={cameraRef}
           style={StyleSheet.absoluteFillObject}
@@ -324,14 +372,16 @@ export default function ScanReceiptScreen({ navigation, route }) {
         </View>
       </View>
 
-      {/* Reticle */}
+      {/* Reticle. We hide the animated scan line once a capture is frozen
+          — there's nothing to "scan" anymore, the pixels are locked in.
+          The corner brackets stay as a subtle frame. */}
       <View style={styles.reticleContainer}>
         <View style={styles.reticle}>
           <CornerBracket position="topLeft" />
           <CornerBracket position="topRight" />
           <CornerBracket position="bottomLeft" />
           <CornerBracket position="bottomRight" />
-          {!parsedData && <ScanLine />}
+          {!parsedData && !frozen && <ScanLine />}
           {parsedData && (
             <View style={styles.floatingBadgeMerchant}>
               <MaterialIcons name="check-circle" size={12} color={colors.onSecondaryContainer} />
@@ -397,7 +447,55 @@ export default function ScanReceiptScreen({ navigation, route }) {
           )}
         </View>
 
-        {!busy && !parsedData && (
+        {!busy && !parsedData && frozen && (
+          // Frozen-image state: user has captured (or picked) at least one
+          // image. Primary action is to process what they've got; secondary
+          // actions let them stack another page or redo the last shot.
+          <>
+            <TouchableOpacity
+              activeOpacity={0.85}
+              onPress={processQueuedImages}
+              style={styles.actionBtnFull}
+            >
+              <LinearGradient
+                colors={[colors.secondary, colors.secondaryDim]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.actionGradient}
+              >
+                <MaterialIcons name="auto-awesome" size={20} color={colors.onSecondary} />
+                <Text style={styles.actionTextPrimary}>
+                  {queuedImages.length > 1
+                    ? `Process ${queuedImages.length} Pages`
+                    : 'Process Receipt'}
+                </Text>
+              </LinearGradient>
+            </TouchableOpacity>
+
+            <View style={styles.actionRow}>
+              {canUseCamera && (
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={resumeCameraForNextPage}
+                  style={styles.actionBtnSecondary}
+                >
+                  <MaterialIcons name="add-a-photo" size={20} color={colors.secondary} />
+                  <Text style={styles.actionTextSecondary}>Add Page</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={retakeLastCapture}
+                style={styles.actionBtnSecondary}
+              >
+                <MaterialIcons name="refresh" size={20} color={colors.secondary} />
+                <Text style={styles.actionTextSecondary}>Retake</Text>
+              </TouchableOpacity>
+            </View>
+          </>
+        )}
+
+        {!busy && !parsedData && !frozen && (
           <>
             {!canUseCamera && (
               <TouchableOpacity
@@ -459,25 +557,6 @@ export default function ScanReceiptScreen({ navigation, route }) {
                 <Text style={styles.actionTextSecondary}>Choose from gallery</Text>
               </TouchableOpacity>
             )}
-
-            {queuedImages.length > 0 && (
-              <TouchableOpacity
-                activeOpacity={0.85}
-                onPress={processQueuedImages}
-                style={styles.actionBtnFull}
-              >
-                <LinearGradient
-                  colors={[colors.secondary, colors.secondaryDim]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={styles.actionGradient}
-                >
-                  <Text style={styles.actionTextPrimary}>
-                    {`Process Receipt`}
-                  </Text>
-                </LinearGradient>
-              </TouchableOpacity>
-            )}
           </>
         )}
 
@@ -512,6 +591,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: '#1a1a1a',
     paddingHorizontal: 32,
+  },
+  // Subtle scrim on top of the frozen still so the bottom status card +
+  // top bar stay readable against bright receipts.
+  frozenDim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.18)',
   },
   permissionHint: {
     marginTop: 16,

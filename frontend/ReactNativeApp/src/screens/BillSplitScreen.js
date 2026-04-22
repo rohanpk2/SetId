@@ -124,6 +124,17 @@ export default function BillSplitScreen({ navigation, route }) {
     },
     onAssignmentUpdate: (data) => {
       if (__DEV__) console.log('[WS] assignment_update received', data);
+      // Guard against no-op broadcasts that used to come out of edge paths
+      // (e.g. the old `_broadcast_assignments` on join). An empty array or a
+      // payload without either an `action` field or any items means nothing
+      // actually changed — don't waste a round-trip re-fetching.
+      const isEmptyArray = Array.isArray(data) && data.length === 0;
+      const hasAction = data && typeof data === 'object' && !Array.isArray(data)
+        ? !!data.action
+        : false;
+      if (isEmptyArray || (!hasAction && !Array.isArray(data))) {
+        return;
+      }
       fetchSummary(true);
     },
     onMemberJoined: (data) => {

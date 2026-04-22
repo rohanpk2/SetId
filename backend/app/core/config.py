@@ -22,6 +22,28 @@ class Settings(BaseSettings):
     STRIPE_WEBHOOK_SECRET: str = ""
     STRIPE_PUBLISHABLE_KEY: str = ""
 
+    # ─── Stripe Connect (host payouts) ─────────────────────────────────
+    # Separate webhook secret for the Connect endpoint (`account.updated`,
+    # `payout.paid`, etc.). Use the secret shown in the dashboard for the
+    # webhook whose URL is `/stripe/connect/webhook`. It MUST be different
+    # from STRIPE_WEBHOOK_SECRET — Stripe signs Connect events with their
+    # own endpoint's secret.
+    STRIPE_CONNECT_WEBHOOK_SECRET: str = ""
+
+    # Stripe-hosted Express onboarding redirects land here. Both URLs are
+    # served by the backend itself (`/stripe/connect/return` and
+    # `/stripe/connect/refresh`) — the mobile in-app browser detects the
+    # redirect and closes, popping the user back into the app. No web
+    # infrastructure change needed.
+    CONNECT_RETURN_URL: str = "https://api.settld.live/stripe/connect/return"
+    CONNECT_REFRESH_URL: str = "https://api.settld.live/stripe/connect/refresh"
+
+    # Platform's cut on every guest PaymentIntent, in basis points.
+    # 0 = no platform fee (everything except Stripe's per-txn fee flows to
+    # the host). 200 = 2%. Applied as `application_fee_amount` on the
+    # PaymentIntent when the bill's host has a connected account.
+    PLATFORM_FEE_BPS: int = 0
+
     # Stripe Issuing (virtual cards)
     STRIPE_ISSUING_ENABLED: bool = False
 

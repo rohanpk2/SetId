@@ -51,9 +51,18 @@ function logAxiosFailure(error) {
   });
 }
 
-// Simple in-memory cache for GET requests
-const responseCache = new Map();
-const CACHE_DURATION = 30000; // 30 seconds
+// Intentionally NO in-memory GET cache here.
+//
+// We used to keep a 30s in-memory response cache for every GET, which was
+// poison for per-bill endpoints like `/bills/:id/summary` and `/assignments`
+// — those change every time any participant does anything, and WS-driven
+// refetches were silently getting served 30-second-old data, overwriting
+// correct state we'd just computed from a live WebSocket frame (e.g. a
+// newly joined party member reverting to "not joined").
+//
+// If you need caching, do it at a layer that supports explicit invalidation:
+//   - RTK Query (in `src/store/api.js`) for dashboard + cross-screen caches
+//   - AsyncStorage via `offlineStorage` for durable offline fallback (below)
 
 const client = axios.create({
   baseURL: BASE_URL,
@@ -66,43 +75,23 @@ client.interceptors.request.use(async (config) => {
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
-  
-  // Check cache for GET requests
-  if (config.method === 'get') {
-    const cacheKey = `${config.baseURL}${config.url}`;
-    const cached = responseCache.get(cacheKey);
-    if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
-      return Promise.reject({
-        __cached: true,
-        data: cached.data
-      });
-    }
-  }
-  
   return config;
 });
 
 client.interceptors.response.use(
   (response) => {
-    // Cache successful GET responses in both tiers: memory (fast) and
-    // AsyncStorage (survives app restart + offline).
+    // Persist successful GET responses to AsyncStorage so an offline cold
+    // start can render something instead of an empty error screen. This is
+    // a durable, explicitly-stale-OK fallback — it is NEVER served on a
+    // successful network request, only when the GET fails outright (see
+    // the error branch below). So it cannot stomp live WS state.
     if (response.config.method === 'get') {
       const cacheKey = `${response.config.baseURL}${response.config.url}`;
-      responseCache.set(cacheKey, {
-        data: response.data,
-        timestamp: Date.now()
-      });
-      // Fire-and-forget; don't block the response path on disk I/O.
       offlineStorage.set(cacheKey, response.data, 24 * 60 * 60 * 1000).catch(() => {});
     }
     return response.data;
   },
   async (error) => {
-    // Handle cached response
-    if (error.__cached) {
-      return Promise.resolve(error.data);
-    }
-
     // When the network fails on a GET, fall back to AsyncStorage so the UI
     // can render with the last known-good data instead of an error screen.
     // We only do this for network errors (not 4xx/5xx) — those indicate the
@@ -366,6 +355,36 @@ export const virtualCards = {
   getEphemeralKey: (billId) => client.post(`/bills/${billId}/virtual-card/ephemeral-key`),
   
   deactivate: (billId) => client.post(`/bills/${billId}/virtual-card/deactivate`),
+};
+
+// ─── Stripe Connect (host payouts) ───────────────────────────────────────────
+// Host-side endpoints for Express onboarding + instant payouts to a debit
+// card. Nothing here is used by guests paying bills — guests go through
+// `paymentMethods` / the existing PaymentIntent flow.
+export const stripeConnect = {
+  /** Fetch current Connect account status. Returns: {
+   *  connected, charges_enabled, payouts_enabled, details_submitted,
+   *  has_instant_external_account, external_account_last4,
+   *  external_account_brand, requirements_due, disabled_reason }.
+   *  Safe to call even when the user has never onboarded — returns
+   *  `connected: false`. */
+  getStatus: () => client.get('/stripe/connect/status'),
+
+  /** Generate a fresh Stripe-hosted onboarding URL. Open it with
+   *  `WebBrowser.openAuthSessionAsync(url, CONNECT_RETURN_URL)` and the
+   *  in-app browser auto-closes on redirect back. Links expire in ~5
+   *  minutes, so always call this right before opening. */
+  startOnboarding: () => client.post('/stripe/connect/onboard'),
+
+  /** Instant-payable balance in cents. */
+  getBalance: () => client.get('/stripe/connect/balance'),
+
+  /** Trigger an instant payout to the host's debit card. */
+  createPayout: ({ amount_cents, currency = 'usd' }) =>
+    client.post('/stripe/connect/payouts', { amount_cents, currency }),
+
+  /** Last 20 payouts for the current user. */
+  listPayouts: () => client.get('/stripe/connect/payouts'),
 };
 
 // ─── Health ──────────────────────────────────────────────────────────────────

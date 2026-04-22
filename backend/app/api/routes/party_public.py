@@ -209,7 +209,12 @@ def join_party(
             "members": members_payload,
         },
     )
-    background_tasks.add_task(_broadcast_assignments, str(bill.id))
+    # Deliberately NOT firing `_broadcast_assignments` here — nothing about
+    # assignments changes when a guest joins. The old code fired an empty
+    # `assignment_update []` broadcast to every connected client, each of
+    # which triggered a wasted `/bills/:id/summary` refetch. On the host's
+    # phone that stale-cached refetch was even overwriting the freshly
+    # applied `member_joined` state, making joins appear to silently revert.
 
     return success_response(data={
         "member_id": str(member.id),
