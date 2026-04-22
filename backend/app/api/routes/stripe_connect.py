@@ -14,9 +14,9 @@ from app.models.user import User
 from app.schemas.payout import (
     BalanceOut,
     ConnectStatusOut,
-    OnboardingLinkOut,
     PayoutCreate,
     PayoutOut,
+    PayoutsSetupRequest,
 )
 from app.services.stripe_connect_service import (
     StripeConnectError,
@@ -40,6 +40,9 @@ _STATUS_BY_CODE: dict[str, int] = {
     "INVALID_AMOUNT": 400,
     "AMOUNT_TOO_SMALL": 400,
     "PAYOUT_INVALID": 400,
+    "IDENTITY_REJECTED": 400,
+    "CARD_DECLINED": 402,
+    "INVALID_CARD": 400,
     "STRIPE_ERROR": 502,
     "WEBHOOK_NOT_CONFIGURED": 503,
     "INVALID_SIGNATURE": 400,
@@ -55,22 +58,45 @@ def _to_error(exc: StripeConnectError):
 # ─── Onboarding ──────────────────────────────────────────────────────────
 
 
-@router.post("/onboard", status_code=201)
-def start_onboarding(
+@router.post("/setup", status_code=201)
+def submit_payout_setup(
+    body: PayoutsSetupRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Create (or reuse) an Express account for the caller and return a
-    fresh onboarding URL. The mobile client opens this URL in an in-app
-    browser that auto-closes when Stripe redirects to CONNECT_RETURN_URL."""
+    """Submit the in-app KYC form + tokenized debit card in one call.
+
+    This is the Custom-account replacement for the old `/onboard`
+    redirect flow. The mobile app:
+      1. Shows identity fields + `CardField` from @stripe/stripe-react-native.
+      2. Calls `createToken({ type: 'Card', currency: 'usd', ... })` → `tok_...`.
+      3. POSTs everything here.
+    """
+    # Grab the client IP from the request — Stripe requires it on the
+    # `tos_acceptance` block for Custom accounts. Use X-Forwarded-For
+    # (set by the load balancer) if present, otherwise the direct peer.
+    forwarded = request.headers.get("x-forwarded-for", "")
+    client_ip = (
+        forwarded.split(",")[0].strip()
+        if forwarded
+        else (request.client.host if request.client else "0.0.0.0")
+    )
+
     try:
         svc = StripeConnectService(db)
-        link = svc.create_onboarding_link(current_user)
+        status_obj = svc.submit_payout_setup(
+            current_user,
+            individual=body.individual.model_dump(),
+            card_token=body.card_token,
+            client_ip=client_ip,
+        )
     except StripeConnectError as e:
         return _to_error(e)
+
     return success_response(
-        data=OnboardingLinkOut(**link).model_dump(),
-        message="Onboarding link created",
+        data=ConnectStatusOut(**status_obj.__dict__).model_dump(),
+        message="Payouts setup complete",
     )
 
 

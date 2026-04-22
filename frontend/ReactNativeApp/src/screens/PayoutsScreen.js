@@ -9,29 +9,13 @@ import {
   ActivityIndicator,
   RefreshControl,
   Alert,
-  Linking,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { colors, radii, shadows } from '../theme';
-import { stripeConnect, BASE_URL } from '../services/api';
-
-// `expo-web-browser` is the preferred way to open the Stripe-hosted
-// onboarding URL because `openAuthSessionAsync` auto-closes the browser
-// on redirect back to the app. We lazy-require it so a missing native
-// module doesn't crash the screen — falling back to `Linking.openURL`
-// which opens the system browser (the user has to tap back manually).
-let WebBrowser = null;
-try {
-  // eslint-disable-next-line global-require
-  WebBrowser = require('expo-web-browser');
-} catch {
-  WebBrowser = null;
-}
-
-const CONNECT_RETURN_URL = `${BASE_URL.replace(/\/$/, '')}/stripe/connect/return`;
+import { stripeConnect } from '../services/api';
 
 function formatUsd(cents) {
   const num = (Number(cents) || 0) / 100;
@@ -66,7 +50,6 @@ export default function PayoutsScreen({ navigation }) {
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [starting, setStarting] = useState(false);
   const [paying, setPaying] = useState(false);
 
   const [status, setStatus] = useState(null);
@@ -131,29 +114,13 @@ export default function PayoutsScreen({ navigation }) {
     setRefreshing(false);
   }, [refreshAll]);
 
-  const handleStartOnboarding = async () => {
-    if (starting) return;
-    setStarting(true);
-    try {
-      const res = await stripeConnect.startOnboarding();
-      const url = res?.data?.url;
-      if (!url) throw new Error('No onboarding URL returned');
-      if (WebBrowser?.openAuthSessionAsync) {
-        // Preferred: in-app browser closes automatically on redirect.
-        await WebBrowser.openAuthSessionAsync(url, CONNECT_RETURN_URL);
-      } else {
-        // Fallback: system browser. User has to tap back to the app.
-        await Linking.openURL(url);
-      }
-      await refreshAll();
-    } catch (err) {
-      Alert.alert(
-        'Could not start onboarding',
-        err?.error?.message ?? err?.message ?? 'Please try again.',
-      );
-    } finally {
-      setStarting(false);
-    }
+  // Opens the in-app setup form (Custom accounts — no browser redirect).
+  // Refresh status when we come back so the card goes green immediately if
+  // Stripe enabled payouts.
+  const handleStartOnboarding = () => {
+    navigation.navigate('SetupPayouts', {
+      onComplete: () => refreshAll(),
+    });
   };
 
   const handleCashOut = async () => {
@@ -282,7 +249,6 @@ export default function PayoutsScreen({ navigation }) {
           <TouchableOpacity
             activeOpacity={0.85}
             onPress={handleStartOnboarding}
-            disabled={starting}
             style={styles.primaryBtn}
           >
             <LinearGradient
@@ -291,21 +257,14 @@ export default function PayoutsScreen({ navigation }) {
               end={{ x: 1, y: 1 }}
               style={styles.primaryBtnGradient}
             >
-              {starting ? (
-                <ActivityIndicator color={colors.onSecondary} />
-              ) : (
-                <>
-                  <MaterialIcons name="account-balance" size={18} color={colors.onSecondary} />
-                  <Text style={styles.primaryBtnText}>Connect a debit card</Text>
-                </>
-              )}
+              <MaterialIcons name="account-balance" size={18} color={colors.onSecondary} />
+              <Text style={styles.primaryBtnText}>Connect a debit card</Text>
             </LinearGradient>
           </TouchableOpacity>
         ) : !status.details_submitted || !status.payouts_enabled ? (
           <TouchableOpacity
             activeOpacity={0.85}
             onPress={handleStartOnboarding}
-            disabled={starting}
             style={styles.primaryBtn}
           >
             <LinearGradient
@@ -314,16 +273,10 @@ export default function PayoutsScreen({ navigation }) {
               end={{ x: 1, y: 1 }}
               style={styles.primaryBtnGradient}
             >
-              {starting ? (
-                <ActivityIndicator color={colors.onSecondary} />
-              ) : (
-                <>
-                  <MaterialIcons name="arrow-forward" size={18} color={colors.onSecondary} />
-                  <Text style={styles.primaryBtnText}>
-                    {status.details_submitted ? 'Review Stripe account' : 'Resume onboarding'}
-                  </Text>
-                </>
-              )}
+              <MaterialIcons name="arrow-forward" size={18} color={colors.onSecondary} />
+              <Text style={styles.primaryBtnText}>
+                {status.details_submitted ? 'Update card info' : 'Finish setup'}
+              </Text>
             </LinearGradient>
           </TouchableOpacity>
         ) : (

@@ -84,16 +84,18 @@ class StripeConnectService:
     # ─── Account lifecycle ───────────────────────────────────────────────
 
     def ensure_connected_account(self, user: User) -> str:
-        """Return the user's `acct_...` id, creating an Express account if
+        """Return the user's `acct_...` id, creating a Custom account if
         they don't have one yet.
 
-        We let Stripe default to the `full` service agreement (omitting
-        `tos_acceptance` entirely). Stripe explicitly blocks the
-        `recipient` agreement for US-platform + US-account — it's only
-        valid for cross-border setups. `full` is also what we actually
-        want: our hosts are Connect merchants of record for funds flowing
-        into their balance via destination charges, so they need to
-        accept the full Express agreement during onboarding.
+        We use Custom (not Express) accounts so the entire onboarding UX
+        stays inside our app — no browser redirect. That means WE collect
+        identity (name, DOB, address, SSN last 4) and WE accept ToS on
+        the user's behalf (requires passing their IP + a timestamp in
+        `submit_payout_setup`). See Stripe's "Custom account onboarding"
+        docs for the regulatory underpinning.
+
+        The account row here is the skeleton; `submit_payout_setup`
+        fills in identity + attaches the debit card + flips ToS.
         """
         if user.stripe_account_id:
             return user.stripe_account_id
@@ -102,10 +104,12 @@ class StripeConnectService:
 
         try:
             account = stripe.Account.create(
-                type="express",
+                type="custom",
                 country="US",
                 email=email,
                 capabilities={
+                    # Required for destination charges so guest card payments
+                    # can land in this host's Connect balance.
                     "card_payments": {"requested": True},
                     "transfers": {"requested": True},
                 },
@@ -115,9 +119,9 @@ class StripeConnectService:
                         "Settld bill-splitting: receives funds from guests "
                         "and pays out to the host who picked up the check."
                     ),
-                    # 7299 = Miscellaneous personal services. Matches how we
-                    # describe the app to Stripe Connect onboarding.
+                    # 7299 = Miscellaneous personal services.
                     "mcc": "7299",
+                    "url": "https://settld.live",
                 },
                 metadata={"user_id": str(user.id)},
             )
@@ -136,34 +140,125 @@ class StripeConnectService:
         )
         return account.id
 
-    def create_onboarding_link(
+    def submit_payout_setup(
         self,
         user: User,
         *,
-        return_url: Optional[str] = None,
-        refresh_url: Optional[str] = None,
-    ) -> dict:
-        """Generate a fresh Stripe-hosted onboarding URL.
+        individual: dict,
+        card_token: str,
+        client_ip: str,
+    ) -> ConnectedAccountStatus:
+        """Complete in-app onboarding in a single call.
 
-        AccountLinks expire in ~5 minutes. We always mint a new one rather
-        than caching — cheap and avoids dealing with expiry. The frontend
-        opens this URL in an in-app browser that auto-closes when Stripe
-        redirects to `return_url` / `refresh_url`.
+        `individual` is the KYC payload the mobile app collected:
+            {
+              first_name, last_name, email,
+              dob_day, dob_month, dob_year,
+              address_line1, address_city, address_state, address_postal_code,
+              ssn_last_4, phone,
+            }
+        `card_token` is a `tok_...` produced by Stripe Elements / React
+        Native SDK on the client — the raw card number never touches
+        our servers. `client_ip` is required by Stripe for ToS
+        acceptance on Custom accounts (CCPA/PCI evidence trail).
+
+        Flow, all in one atomic-ish sequence:
+          1. Ensure Custom account exists.
+          2. `Account.modify`: set `individual.*` + `tos_acceptance`.
+          3. `Account.create_external_account`: attach the card token as
+             the payout destination. Stripe rejects non-debit cards here
+             automatically — we don't need to pre-check the brand.
+          4. Refresh cached status and return it.
         """
         account_id = self.ensure_connected_account(user)
+
+        dob = {
+            "day": int(individual["dob_day"]),
+            "month": int(individual["dob_month"]),
+            "year": int(individual["dob_year"]),
+        }
+        address = {
+            "line1": individual["address_line1"].strip(),
+            "city": individual["address_city"].strip(),
+            "state": individual["address_state"].strip().upper(),
+            "postal_code": individual["address_postal_code"].strip(),
+            "country": "US",
+        }
+        individual_payload: dict = {
+            "first_name": individual["first_name"].strip(),
+            "last_name": individual["last_name"].strip(),
+            "email": individual["email"].strip(),
+            "phone": individual["phone"].strip(),
+            "dob": dob,
+            "address": address,
+            # Stripe accepts last 4 OR full SSN; we pass last 4 and let
+            # Stripe ask for full SSN via `requirements.currently_due`
+            # if/when it flags the account.
+            "ssn_last_4": individual["ssn_last_4"].strip(),
+        }
+
+        # ToS acceptance — timestamp must be a unix int in seconds.
+        import time
+
+        tos = {
+            "date": int(time.time()),
+            "ip": client_ip,
+            "user_agent": individual.get("user_agent") or "settld-mobile",
+        }
+
         try:
-            link = stripe.AccountLink.create(
-                account=account_id,
-                refresh_url=refresh_url or settings.CONNECT_REFRESH_URL,
-                return_url=return_url or settings.CONNECT_RETURN_URL,
-                type="account_onboarding",
+            stripe.Account.modify(
+                account_id,
+                individual=individual_payload,
+                tos_acceptance=tos,
+            )
+        except stripe.error.InvalidRequestError as e:
+            raise StripeConnectError(
+                "IDENTITY_REJECTED", self._safe_stripe_message(e)
             )
         except stripe.error.StripeError as e:
-            logger.exception("stripe_connect_link_create_failed")
+            logger.exception("stripe_connect_account_modify_failed")
             raise StripeConnectError(
                 "STRIPE_ERROR", self._safe_stripe_message(e)
             )
-        return {"url": link.url, "expires_at": link.expires_at}
+
+        # Attach the tokenized debit card as the default payout
+        # destination. If the user already had a card attached, this
+        # adds a new one — we then mark it `default_for_currency=True`
+        # so payouts route to the latest card.
+        try:
+            ext = stripe.Account.create_external_account(
+                account_id,
+                external_account=card_token,
+                default_for_currency=True,
+            )
+        except stripe.error.CardError as e:
+            raise StripeConnectError(
+                "CARD_DECLINED", self._safe_stripe_message(e)
+            )
+        except stripe.error.InvalidRequestError as e:
+            # Stripe rejects credit cards and non-US debit cards with
+            # InvalidRequestError; surface a specific error so the UI
+            # can say "use a US debit card".
+            raise StripeConnectError(
+                "INVALID_CARD", self._safe_stripe_message(e)
+            )
+        except stripe.error.StripeError as e:
+            logger.exception("stripe_connect_external_account_failed")
+            raise StripeConnectError(
+                "STRIPE_ERROR", self._safe_stripe_message(e)
+            )
+
+        logger.info(
+            "stripe_connect_setup_submitted",
+            extra={
+                "user_id": str(user.id),
+                "account_id": account_id,
+                "external_account_id": getattr(ext, "id", None),
+            },
+        )
+
+        return self.refresh_account_status(user)
 
     def refresh_account_status(self, user: User) -> ConnectedAccountStatus:
         """Pull the authoritative account state from Stripe, cache the

@@ -370,11 +370,17 @@ export const stripeConnect = {
    *  `connected: false`. */
   getStatus: () => client.get('/stripe/connect/status'),
 
-  /** Generate a fresh Stripe-hosted onboarding URL. Open it with
-   *  `WebBrowser.openAuthSessionAsync(url, CONNECT_RETURN_URL)` and the
-   *  in-app browser auto-closes on redirect back. Links expire in ~5
-   *  minutes, so always call this right before opening. */
-  startOnboarding: () => client.post('/stripe/connect/onboard'),
+  /** Submit the in-app KYC form + tokenized debit card in one call.
+   *  Payload:
+   *    {
+   *      individual: { first_name, last_name, email, phone,
+   *                    dob_day, dob_month, dob_year,
+   *                    address_line1, address_city, address_state, address_postal_code,
+   *                    ssn_last_4 },
+   *      card_token: 'tok_xxx',  // from stripe.createToken on the client
+   *    }
+   *  Replaces the old `/onboard` → Stripe-hosted redirect flow. */
+  setupPayouts: (payload) => client.post('/stripe/connect/setup', payload),
 
   /** Instant-payable balance in cents. */
   getBalance: () => client.get('/stripe/connect/balance'),

@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 class PayoutCreate(BaseModel):
@@ -53,3 +53,52 @@ class ConnectStatusOut(BaseModel):
 class BalanceOut(BaseModel):
     instant_available_cents: int
     currency: str = "usd"
+
+
+class PayoutsSetupIndividual(BaseModel):
+    """Identity fields the mobile app collects in-app for Custom Connect
+    onboarding. All required per Stripe's US KYC minimum.
+    """
+
+    first_name: str = Field(..., min_length=1, max_length=100)
+    last_name: str = Field(..., min_length=1, max_length=100)
+    email: EmailStr
+    phone: str = Field(..., min_length=4, max_length=20)  # E.164 preferred
+
+    dob_day: int = Field(..., ge=1, le=31)
+    dob_month: int = Field(..., ge=1, le=12)
+    # 1900 floor avoids junk; current-year ceiling enforced client-side.
+    dob_year: int = Field(..., ge=1900, le=datetime.now().year)
+
+    address_line1: str = Field(..., min_length=1, max_length=200)
+    address_city: str = Field(..., min_length=1, max_length=100)
+    address_state: str = Field(..., min_length=2, max_length=2)
+    address_postal_code: str = Field(..., min_length=3, max_length=10)
+
+    ssn_last_4: str = Field(..., min_length=4, max_length=4)
+
+    @field_validator("ssn_last_4")
+    @classmethod
+    def _ssn_digits(cls, v: str) -> str:
+        v = v.strip()
+        if not v.isdigit():
+            raise ValueError("ssn_last_4 must be 4 digits")
+        return v
+
+    @field_validator("address_state")
+    @classmethod
+    def _state_upper(cls, v: str) -> str:
+        return v.strip().upper()
+
+
+class PayoutsSetupRequest(BaseModel):
+    """Body of `POST /stripe/connect/setup`. Combines the in-app KYC
+    form with the client-tokenized debit card.
+
+    `card_token` is a `tok_...` string returned by the Stripe React
+    Native SDK's `createToken({ type: 'Card', currency: 'usd', ... })`.
+    The raw card number never leaves the phone.
+    """
+
+    individual: PayoutsSetupIndividual
+    card_token: str = Field(..., min_length=1, max_length=100)
