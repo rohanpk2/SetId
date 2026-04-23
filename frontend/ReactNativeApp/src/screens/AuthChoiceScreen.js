@@ -1,7 +1,9 @@
-import React from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Image,
+  Platform,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -12,7 +14,10 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons, MaterialIcons } from '@expo/vector-icons';
+import * as AppleAuthentication from 'expo-apple-authentication';
 import { colors, radii, shadows, spacing } from '../theme';
+import { useAuth } from '../contexts/AuthContext';
+import { ApiError } from '../services/api';
 
 const HERO_GRADIENT = ['#F6FCFA', '#EFF8F5', '#FDFEFE'];
 const PHONE_GRADIENT = ['#55D2AA', '#20AE7B'];
@@ -54,18 +59,80 @@ export default function AuthChoiceScreen({ navigation }) {
   const insets = useSafeAreaInsets();
   const { height } = useWindowDimensions();
   const compact = height < 820;
+  const { completeAppleAuth, setPendingOnboardingName } = useAuth();
+
+  const [appleAvailable, setAppleAvailable] = useState(false);
+  const [appleLoading, setAppleLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (Platform.OS !== 'ios') return;
+      try {
+        const available = await AppleAuthentication.isAvailableAsync();
+        if (!cancelled) setAppleAvailable(available);
+      } catch {
+        if (!cancelled) setAppleAvailable(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleBack = () => {
     if (navigation.canGoBack()) navigation.goBack();
     else navigation.navigate('Landing');
   };
 
-  const handleApplePress = () => {
-    Alert.alert(
-      'Apple sign in coming soon',
-      'Continue with phone is available now. Apple sign in still needs native app wiring.',
-    );
-  };
+  const handleApplePress = useCallback(async () => {
+    if (appleLoading) return;
+    setAppleLoading(true);
+    try {
+      const credential = await AppleAuthentication.signInAsync({
+        requestedScopes: [
+          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+          AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        ],
+      });
+
+      if (!credential?.identityToken) {
+        throw new Error('Apple did not return an identity token.');
+      }
+
+      const userInfo = credential.fullName
+        ? {
+            name: {
+              firstName: credential.fullName.givenName ?? '',
+              lastName: credential.fullName.familyName ?? '',
+            },
+            email: credential.email ?? null,
+          }
+        : null;
+
+      const prefill =
+        credential.fullName?.givenName ||
+        (credential.email ? credential.email.split('@')[0] : '');
+      if (prefill) setPendingOnboardingName(prefill);
+
+      await completeAppleAuth({
+        identityToken: credential.identityToken,
+        authorizationCode: credential.authorizationCode ?? null,
+        userInfo,
+      });
+    } catch (err) {
+      if (err?.code === 'ERR_REQUEST_CANCELED' || err?.code === 'ERR_CANCELED') {
+        return;
+      }
+      const message =
+        err instanceof ApiError
+          ? err.message
+          : err?.message || 'Could not sign in with Apple. Please try again.';
+      Alert.alert('Sign in failed', message);
+    } finally {
+      setAppleLoading(false);
+    }
+  }, [appleLoading, completeAppleAuth, setPendingOnboardingName]);
 
   return (
     <View style={styles.root}>
@@ -141,28 +208,42 @@ export default function AuthChoiceScreen({ navigation }) {
             </LinearGradient>
           </TouchableOpacity>
 
-          <View style={[styles.dividerRow, compact && styles.dividerRowCompact]}>
-            <View style={styles.dividerLine} />
-            <Text style={styles.dividerText}>or</Text>
-            <View style={styles.dividerLine} />
-          </View>
+          {appleAvailable ? (
+            <>
+              <View style={[styles.dividerRow, compact && styles.dividerRowCompact]}>
+                <View style={styles.dividerLine} />
+                <Text style={styles.dividerText}>or</Text>
+                <View style={styles.dividerLine} />
+              </View>
 
-          <TouchableOpacity
-            activeOpacity={0.9}
-            onPress={handleApplePress}
-            style={styles.buttonTouchable}
-          >
-            <View
-              style={[
-                styles.secondaryButton,
-                compact && styles.buttonCompact,
-                shadows.card,
-              ]}
-            >
-              <Ionicons name="logo-apple" size={25} color="#FFFFFF" />
-              <Text style={styles.secondaryButtonText}>Continue with Apple</Text>
-            </View>
-          </TouchableOpacity>
+              <TouchableOpacity
+                activeOpacity={0.9}
+                onPress={handleApplePress}
+                disabled={appleLoading}
+                style={styles.buttonTouchable}
+                accessibilityRole="button"
+                accessibilityLabel="Continue with Apple"
+              >
+                <View
+                  style={[
+                    styles.secondaryButton,
+                    compact && styles.buttonCompact,
+                    appleLoading && styles.secondaryButtonDisabled,
+                    shadows.card,
+                  ]}
+                >
+                  {appleLoading ? (
+                    <ActivityIndicator color="#FFFFFF" />
+                  ) : (
+                    <>
+                      <Ionicons name="logo-apple" size={25} color="#FFFFFF" />
+                      <Text style={styles.secondaryButtonText}>Continue with Apple</Text>
+                    </>
+                  )}
+                </View>
+              </TouchableOpacity>
+            </>
+          ) : null}
 
           <View style={[styles.footer, compact && styles.footerCompact]}>
             <Text style={[styles.accountCopy, compact && styles.accountCopyCompact]}>
@@ -447,6 +528,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: spacing.md,
+  },
+  secondaryButtonDisabled: {
+    opacity: 0.6,
   },
   secondaryButtonText: {
     fontFamily: 'Manrope_700Bold',

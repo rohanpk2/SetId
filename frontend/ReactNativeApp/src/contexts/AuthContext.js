@@ -81,6 +81,31 @@ export function AuthProvider({ children }) {
     }
   }, [refreshMe]);
 
+  const completeAppleAuth = useCallback(async ({ identityToken, authorizationCode, userInfo }) => {
+    const body = await authApi.signInWithApple({ identityToken, authorizationCode, userInfo });
+    const data = unwrap(body);
+    const accessToken = data.access_token ?? data.token;
+    if (!accessToken) throw new Error('No token returned');
+    await setToken(accessToken);
+    setTokenState(accessToken);
+    if (data.user) {
+      setUser(data.user);
+      setNeedsOnboarding(false);
+      return data.user;
+    }
+    try {
+      const me = await refreshMe();
+      return me;
+    } catch (e) {
+      if (e instanceof ApiError && e.code === 'PROFILE_NOT_FOUND') {
+        setUser(null);
+        setNeedsOnboarding(true);
+        return null;
+      }
+      throw e;
+    }
+  }, [refreshMe]);
+
   const createProfile = useCallback(async (fullName) => {
     const body = await authApi.createProfile(fullName);
     const data = unwrap(body);
@@ -116,6 +141,7 @@ export function AuthProvider({ children }) {
         pendingOnboardingName,
         setPendingOnboardingName,
         completePhoneAuth,
+        completeAppleAuth,
         createProfile,
         refreshMe,
         logout,

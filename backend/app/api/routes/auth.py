@@ -257,9 +257,49 @@ def verify_otp_phone(request: Request, body: VerifyOtpRequest, db: Session = Dep
 
 
 @router.post("/apple")
-async def apple_signin(body: AppleSignInRequest):
-    return error_response(
-        "UNSUPPORTED_AUTH_FLOW",
-        "Apple Sign-In is disabled for this deployment.",
-        410,
+@limiter.limit("30/minute")
+async def apple_signin(
+    request: Request,
+    body: AppleSignInRequest,
+    db: Session = Depends(get_db),
+):
+    """Sign in / sign up with Apple via native Apple Sign In on iOS."""
+    svc = AuthService(db)
+    try:
+        user, token = await svc.apple_signin(
+            identity_token=body.identity_token,
+            authorization_code=body.authorization_code,
+            user_info=body.user_info,
+        )
+    except ValueError as e:
+        msg = str(e) or "Apple Sign-In failed."
+        logger.warning(
+            "auth.apple_signin rejected reason=%s ip=%s",
+            msg,
+            request.client.host if request.client else None,
+        )
+        if "disabled" in msg.lower() or "deactivated" in msg.lower():
+            return error_response("ACCOUNT_DISABLED", "This account is disabled.", 403)
+        if "email is required" in msg.lower():
+            return error_response(
+                "APPLE_EMAIL_REQUIRED",
+                "Apple did not share your email. Try Continue with phone instead.",
+                400,
+            )
+        if "invalid apple token" in msg.lower() or "apple key" in msg.lower():
+            return error_response("APPLE_TOKEN_INVALID", "Could not verify your Apple credentials. Please try again.", 401)
+        return error_response("APPLE_SIGNIN_FAILED", "Could not sign in with Apple. Please try again.", 400)
+
+    logger.info(
+        "auth.apple_signin ok user_id=%s ip=%s",
+        user.id,
+        request.client.host if request.client else None,
     )
+
+    auth = PhoneAuthData(
+        token=token,
+        access_token=token,
+        user=UserBrief.model_validate(user),
+        needs_profile=False,
+    )
+    return success_response(data=auth.model_dump(mode="json"), message="Signed in with Apple")

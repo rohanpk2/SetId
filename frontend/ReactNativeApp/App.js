@@ -44,7 +44,6 @@ const ActivityDetailScreen = React.lazy(() => import('./src/screens/ActivityDeta
 const FundsCollectedScreen = React.lazy(() => import('./src/screens/FundsCollectedScreen'));
 const NotificationsScreen = React.lazy(() => import('./src/screens/NotificationsScreen'));
 const JoinBillScreen = React.lazy(() => import('./src/screens/JoinBillScreen'));
-const AddPaymentMethodScreen = React.lazy(() => import('./src/screens/AddPaymentMethodScreen'));
 const PayoutsScreen = React.lazy(() => import('./src/screens/PayoutsScreen'));
 const SetupPayoutsScreen = React.lazy(() => import('./src/screens/SetupPayoutsScreen'));
 const UpdatePayoutCardScreen = React.lazy(() =>
@@ -70,9 +69,6 @@ function NotificationsStackScreen(props) {
 }
 function JoinBillStackScreen(props) {
   return <LazyScreen component={JoinBillScreen} {...props} />;
-}
-function AddPaymentMethodStackScreen(props) {
-  return <LazyScreen component={AddPaymentMethodScreen} {...props} />;
 }
 function PayoutsStackScreen(props) {
   return <LazyScreen component={PayoutsScreen} {...props} />;
@@ -159,11 +155,6 @@ function MainNavigator() {
         options={{ animation: 'slide_from_right' }}
       />
       <MainStack.Screen
-        name="AddPaymentMethod"
-        component={AddPaymentMethodStackScreen}
-        options={{ animation: 'slide_from_bottom' }}
-      />
-      <MainStack.Screen
         name="Payouts"
         component={PayoutsStackScreen}
         options={{ animation: 'slide_from_right' }}
@@ -248,7 +239,6 @@ export default function App() {
         <SafeAreaProvider>
           <StripeProvider
             publishableKey="pk_live_51RF1vSA5ckD2kd7M4w7D7m5FPVLiZNSjAUy1VcwulfDZOvmeLZ62RPK8igrgmhKmj34BtdXDO7CBZSPuWGjHjKin00yWltIKKh"
-            merchantIdentifier="merchant.com.culinAILLC.settld"
           >
             <AuthProvider>
               <NavigationContainer>

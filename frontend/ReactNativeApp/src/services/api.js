@@ -165,6 +165,13 @@ export const authApi = {
       ...(intent ? { intent } : {}),
     }),
 
+  signInWithApple: ({ identityToken, authorizationCode, userInfo }) =>
+    client.post('/auth/apple', {
+      identity_token: identityToken,
+      authorization_code: authorizationCode ?? null,
+      user_info: userInfo ?? null,
+    }),
+
   getMe: () => client.get('/auth/me'),
 
   createProfile: (fullName) =>
