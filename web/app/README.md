@@ -23,7 +23,7 @@ A mobile-first web payment application for bill splitting, built with React, Vit
 ## Project Structure
 
 ```
-payment-web/
+web/app/
 ├── src/
 │   ├── pages/
 │   │   ├── PaymentPage.jsx      # Main payment page
@@ -56,7 +56,7 @@ payment-web/
 
 1. Clone the repository:
 ```bash
-cd payment-web
+cd web/app
 ```
 
 2. Install dependencies:

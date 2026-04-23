@@ -27,7 +27,7 @@
   --hero-gradient: linear-gradient(165deg, #0d4a3c 0%, #105D4B 55%, #0a7c63 100%);
   --band-gradient: linear-gradient(135deg, #4FD1A7 0%, #1FA87A 55%, #105D4B 100%);
 
-  /* ── Neutrals (combined — payment-web names + landing aliases) */
+  /* ── Neutrals (combined — legacy payment names + landing aliases) */
   --color-background: #f8f9fa;
   --color-surface: #f8f9fa;
   --color-surface-lowest: #ffffff;
@@ -315,7 +315,7 @@ p { line-height: 1.6; }
 }
 
 /* ─────────────────────────────────────────────────────────────
-   Legacy payment-web primitives (kept for existing flow screens)
+   Legacy payment primitives (kept for existing flow screens)
    ───────────────────────────────────────────────────────────── */
 
 .brand-header {
