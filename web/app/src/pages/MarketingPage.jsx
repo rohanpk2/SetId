@@ -37,7 +37,7 @@ export default function MarketingPage() {
             The <span className="display-accent">Settld</span> press kit.
           </h1>
           <p className="body-lg mk-hero-sub">
-            Everything you need to write about, cover, or partner with Settld — logos, colors,
+            Everything you need to write about, cover, or partner with Settld: logos, colors,
             product screenshots, and the short version of our story.
           </p>
           <div className="mk-hero-ctas">
@@ -61,7 +61,7 @@ export default function MarketingPage() {
           </p>
           <p className="mk-story-body">
             Today, Settld lets you scan any receipt, tap who had what, and send a pay link that
-            friends open in any browser — no app, no signup, no "I&rsquo;ll get you later." Money
+            friends open in any browser. No app, no signup, no "I&rsquo;ll get you later." Money
             moves in seconds. The awkward math is gone.
           </p>
           <div className="mk-stats">

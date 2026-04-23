@@ -18,15 +18,15 @@ import './LandingPage.css';
 const FAQ_ITEMS = [
   {
     q: 'How does Settld split a bill?',
-    a: 'Snap a photo of the receipt. Settld uses OCR to pull every item, tax, and tip automatically. Tap who had what, and the math happens instantly — down to the cent.',
+    a: 'Snap a photo of the receipt. Settld uses OCR to pull every item, tax, and tip automatically. Tap who had what, and the math happens instantly, down to the cent.',
   },
   {
     q: 'Do my friends need the app to pay me?',
-    a: 'No. You just share a payment link (iMessage, WhatsApp, AirDrop — anything). They open it in any browser and pay with Apple Pay, card, or bank. The app is only required for the person collecting.',
+    a: 'No. You just share a payment link via iMessage, WhatsApp, or AirDrop. They open it in any browser and pay with Apple Pay, card, or bank. The app is only required for the person collecting.',
   },
   {
     q: 'Are there any fees?',
-    a: 'Settld is free to download and free for your friends to pay. Standard Stripe processing fees may apply to the collecting account — we never charge hidden fees on top.',
+    a: 'Settld is free to download and free for your friends to pay. Standard Stripe processing fees may apply to the collecting account. We never charge hidden fees on top.',
   },
   {
     q: 'How fast do I get paid?',
@@ -63,7 +63,7 @@ export default function LandingPage() {
               not your friendships.
             </h1>
             <p className="hero-sub">
-              Scan a receipt. Tap who had what. Get paid — instantly. Settld turns the dinner-table
+              Scan a receipt. Tap who had what. Get paid instantly. Settld turns the dinner-table
               calculator moment into a 10-second tap.
             </p>
             <div className="hero-ctas">
@@ -141,11 +141,11 @@ export default function LandingPage() {
             eyebrow="Scan"
             title="Snap it."
             titleAccent="We'll read the fine print."
-            body="Point your camera at any receipt. Settld pulls every item, tax, and tip in seconds — no typing, no re-entering prices you already paid for."
+            body="Point your camera at any receipt. Settld pulls every item, tax, and tip in seconds. No typing, no re-entering prices you already paid for."
             bullets={[
               'OCR trained on real-world restaurant receipts',
               'Works on crumpled, faded, or handwritten totals',
-              'Edit any line before assigning — just in case',
+              'Edit any line before assigning, just in case',
             ]}
             image={assignImg}
             imageAlt="Settld scanning a Texas Roadhouse receipt"
@@ -157,7 +157,7 @@ export default function LandingPage() {
             eyebrow="Assign"
             title="Tap to assign."
             titleAccent="Math does itself."
-            body="Drop items onto your friends, or share them evenly. Tax and tip split proportionally — down to the cent. Nobody gets stuck paying for the steak they didn't order."
+            body="Drop items onto your friends, or share them evenly. Tax and tip split proportionally, down to the cent. Nobody gets stuck paying for the steak they didn't order."
             bullets={[
               'Split any item between 2 or more people',
               'Proportional tax and tip, no awkward rounding',
@@ -174,7 +174,7 @@ export default function LandingPage() {
             eyebrow="Share"
             title="One link."
             titleAccent="Everyone pays."
-            body="Send a pay link through iMessage, WhatsApp, or AirDrop. Your friends open it in any browser and pay with Apple Pay, card, or bank — no app required on their end."
+            body="Send a pay link through iMessage, WhatsApp, or AirDrop. Your friends open it in any browser and pay with Apple Pay, card, or bank. No app required on their end."
             bullets={[
               'Works on iOS, Android, and desktop browsers',
               'Apple Pay, Google Pay, cards, and bank transfer',
@@ -202,7 +202,7 @@ export default function LandingPage() {
             <ul className="track-bullets">
               <li>Live progress bar as each friend pays</li>
               <li>One-tap reminders when someone forgets</li>
-              <li>Mark cash payments manually — the tracker keeps up</li>
+              <li>Mark cash payments manually, the tracker keeps up</li>
               <li>Every bill archived so you never lose a record</li>
             </ul>
           </div>
@@ -263,7 +263,7 @@ const FEATURES = [
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="4" width="20" height="16" rx="3"/><line x1="2" y1="10" x2="22" y2="10"/><line x1="6" y1="15" x2="8" y2="15"/></svg>
     ),
     title: 'Apple Pay & cards',
-    body: 'Every major payment method — Apple Pay, Google Pay, Visa, Mastercard, Amex, Discover.',
+    body: 'Every major payment method: Apple Pay, Google Pay, Visa, Mastercard, Amex, Discover.',
   },
   {
     icon: (
@@ -277,7 +277,7 @@ const FEATURES = [
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="12" cy="13" r="4"/><path d="M8 3v2M16 3v2"/></svg>
     ),
     title: 'OCR receipt scan',
-    body: 'Trained on real receipts. Pulls items, tax, and tip in under 3 seconds — no retyping.',
+    body: 'Trained on real receipts. Pulls items, tax, and tip in under 3 seconds. No retyping.',
   },
   {
     icon: (

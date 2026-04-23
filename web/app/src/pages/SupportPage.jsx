@@ -32,7 +32,7 @@ const CATEGORIES = [
 
 const FAQ_ITEMS = [
   {
-    q: 'My friend can\u2019t open the pay link — what do I do?',
+    q: 'My friend can\u2019t open the pay link. What do I do?',
     a: 'Most pay-link issues are caused by iMessage link previews. Have them long-press the link and choose "Open in Safari" (or copy-paste into their browser). If it still won\u2019t load, email us and we\u2019ll regenerate a fresh link.',
   },
   {
@@ -49,7 +49,7 @@ const FAQ_ITEMS = [
   },
   {
     q: 'Can I use Settld outside the US?',
-    a: 'Right now Settld supports US-issued bank accounts and debit cards for collectors. Payers can be anywhere — if their card supports international transactions, the link will work.',
+    a: 'Right now Settld supports US-issued bank accounts and debit cards for collectors. Payers can be anywhere; if their card supports international transactions, the link will work.',
   },
   {
     q: 'A friend paid me in cash. How do I mark them paid?',
@@ -66,7 +66,7 @@ export default function SupportPage() {
   const onSubmit = (e) => {
     e.preventDefault();
     const subject = encodeURIComponent(`Support request from ${state.name || 'a customer'}`);
-    const body = encodeURIComponent(`${state.message}\n\n—\nFrom: ${state.name} <${state.email}>`);
+    const body = encodeURIComponent(`${state.message}\n\n---\nFrom: ${state.name} <${state.email}>`);
     window.location.href = `mailto:${SUPPORT_EMAIL}?subject=${subject}&body=${body}`;
     setSent(true);
   };
@@ -150,7 +150,7 @@ export default function SupportPage() {
               </label>
               <label className="contact-field">
                 <span>How can we help?</span>
-                <textarea name="message" rows={5} value={state.message} onChange={onChange} required placeholder="Describe the issue — include bill ID if you have one." />
+                <textarea name="message" rows={5} value={state.message} onChange={onChange} required placeholder="Describe the issue. Include bill ID if you have one." />
               </label>
               <button type="submit" className="btn btn-primary contact-submit">
                 {sent ? 'Opening your email app…' : 'Send message'}

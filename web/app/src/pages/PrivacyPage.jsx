@@ -104,7 +104,7 @@ export default function PrivacyPage() {
               <li>To deliver pay links to participants you invite</li>
               <li>To notify you when someone pays you or when a bill changes state</li>
               <li>To prevent fraud, abuse, and violations of our terms</li>
-              <li>To improve our product — fixing bugs, improving OCR accuracy, and shipping new features</li>
+              <li>To improve our product: fixing bugs, improving OCR accuracy, and shipping new features</li>
               <li>To respond to support requests and legal obligations</li>
             </ul>
           </section>
@@ -115,10 +115,10 @@ export default function PrivacyPage() {
 
             <h3>Service providers</h3>
             <ul>
-              <li><strong>Stripe</strong> — payment processing and payouts</li>
-              <li><strong>Twilio</strong> — SMS delivery for OTP verification and notifications</li>
-              <li><strong>Cloud hosting</strong> — Amazon Web Services (or equivalent) for database and image storage</li>
-              <li><strong>Crash &amp; analytics</strong> — aggregated, anonymized product analytics to improve the app</li>
+              <li><strong>Stripe</strong> for payment processing and payouts</li>
+              <li><strong>Twilio</strong> for SMS delivery, OTP verification, and notifications</li>
+              <li><strong>Cloud hosting</strong> via Amazon Web Services (or equivalent) for database and image storage</li>
+              <li><strong>Crash &amp; analytics</strong> tools for aggregated, anonymized product analytics to improve the app</li>
             </ul>
 
             <h3>Bill participants</h3>
