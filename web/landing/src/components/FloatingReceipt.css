@@ -1,0 +1,48 @@
+.float-receipt {
+  position: absolute;
+  width: 62px;
+  height: 88px;
+  background: #ffffff;
+  border-radius: 8px;
+  padding: 8px;
+  box-shadow: var(--shadow-receipt);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  animation: floatBob 4s ease-in-out infinite;
+  will-change: transform;
+  transform-origin: center;
+}
+
+.float-receipt-sm { width: 50px; height: 70px; padding: 6px; gap: 2px; }
+.float-receipt-lg { width: 72px; height: 100px; }
+
+.float-line {
+  height: 3px;
+  background: #E5E7EB;
+  border-radius: 1px;
+  width: 100%;
+}
+
+.float-line-green {
+  height: 2px;
+  background: var(--color-mint-2);
+}
+
+@keyframes floatBob {
+  0%, 100% { transform: translateY(0) rotate(var(--float-rot, 0deg)); }
+  50%      { transform: translateY(-8px) rotate(var(--float-rot, 0deg)); }
+}
+
+/* When an inline rotation is applied via style.transform it overrides the
+   keyframe rotate(). Use a combined trick: wrap the keyframe in translate only
+   and let the inline rotation stick by applying both via animation on the
+   .float-receipt element. Here we override translate only. */
+.float-receipt {
+  animation-name: floatBobY;
+}
+
+@keyframes floatBobY {
+  0%, 100% { translate: 0 0; }
+  50%      { translate: 0 -8px; }
+}

@@ -1,0 +1,19 @@
+.dollar-chip {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #F5A623;
+  color: #5a3a00;
+  font-family: var(--font-display);
+  font-weight: 800;
+  border-radius: 50%;
+  box-shadow: 0 8px 20px rgba(245, 166, 35, 0.45), inset 0 1px 0 rgba(255,255,255,0.4);
+  animation: chipBob 3.5s ease-in-out infinite;
+  will-change: transform;
+}
+
+@keyframes chipBob {
+  0%, 100% { translate: 0 0; }
+  50%      { translate: 0 -12px; }
+}

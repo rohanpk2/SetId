@@ -1,0 +1,95 @@
+.phone {
+  --phone-w: 280px;
+  --phone-r: 48px;
+  --phone-p: 10px;
+  position: relative;
+  width: var(--phone-w);
+  aspect-ratio: 9 / 19.5;
+  border-radius: var(--phone-r);
+  background: linear-gradient(160deg, #232323 0%, #0e0e0e 45%, #1a1a1a 100%);
+  padding: var(--phone-p);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.06),
+    inset 0 2px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.5),
+    var(--shadow-hero-phone);
+  isolation: isolate;
+}
+
+.phone-sm { --phone-w: 220px; --phone-r: 38px; --phone-p: 8px; }
+.phone-md { --phone-w: 280px; }
+.phone-lg { --phone-w: 340px; --phone-r: 56px; --phone-p: 12px; }
+
+.phone-body {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: calc(var(--phone-r) - var(--phone-p));
+  overflow: hidden;
+  background: #000;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.05);
+}
+
+.phone-screen {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #f8f9fa;
+}
+
+.phone-screen img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top center;
+  display: block;
+}
+
+.phone-island {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 36%;
+  height: 26px;
+  background: #000;
+  border-radius: 999px;
+  z-index: 2;
+  box-shadow: 0 1px 0 rgba(255,255,255,0.04);
+}
+
+.phone-sm .phone-island { height: 20px; top: 8px; width: 34%; }
+.phone-lg .phone-island { height: 30px; top: 12px; }
+
+/* Side buttons */
+.phone-side {
+  position: absolute;
+  top: 22%;
+  width: 3px;
+  height: 50%;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.phone-side-left  { left: -3px; align-items: flex-start; }
+.phone-side-right { right: -3px; align-items: flex-end; }
+
+.phone-btn {
+  display: block;
+  width: 3px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #0a0a0a, #2a2a2a);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04);
+}
+
+.phone-btn-mute  { height: 22px; }
+.phone-btn-vol   { height: 42px; }
+.phone-btn-power { height: 62px; }
+
+@media (max-width: 768px) {
+  .phone-md { --phone-w: 240px; }
+  .phone-lg { --phone-w: 280px; --phone-r: 48px; }
+}
