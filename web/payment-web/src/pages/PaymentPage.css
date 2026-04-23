@@ -15,12 +15,12 @@
 
 /* -- Hero (matches ReviewPaymentScreen.heroSection) -- */
 
-.hero-section {
+.pay-hero-section {
   text-align: center;
   margin-bottom: 32px;
 }
 
-.hero-icon {
+.pay-hero-icon {
   width: 80px;
   height: 80px;
   border-radius: 40px;
@@ -31,7 +31,7 @@
   margin: 0 auto 24px;
 }
 
-.hero-title {
+.pay-hero-title {
   font-family: var(--font-display);
   font-size: 28px;
   font-weight: 800;
@@ -40,7 +40,7 @@
   margin-bottom: 8px;
 }
 
-.hero-subtitle {
+.pay-hero-subtitle {
   font-family: var(--font-body);
   font-size: 15px;
   font-weight: 500;

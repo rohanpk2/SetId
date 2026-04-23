@@ -84,10 +84,10 @@ export default function PaymentPage() {
       <div className="pay-container">
         <header className="brand-header"><span className="brand">settld</span></header>
 
-        <div className="hero-section">
-          <div className="hero-icon"><span style={{ fontSize: 36 }}>🧾</span></div>
-          <h1 className="hero-title">{billTitle}</h1>
-          <p className="hero-subtitle">
+        <div className="pay-hero-section">
+          <div className="pay-hero-icon"><span style={{ fontSize: 36 }}>🧾</span></div>
+          <h1 className="pay-hero-title">{billTitle}</h1>
+          <p className="pay-hero-subtitle">
             Your share{memberName ? ` (${memberName})` : ''} — review and pay below.
           </p>
         </div>

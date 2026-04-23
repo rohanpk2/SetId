@@ -1,6 +1,11 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@400;700;800&display=swap');
+/* ─────────────────────────────────────────────────────────────
+   Unified design tokens — shared by landing pages and payment
+   flows. Mirrors frontend/ReactNativeApp/src/theme.js so mobile
+   and web stay in lockstep.
+   ───────────────────────────────────────────────────────────── */
 
 :root {
+  /* ── Primary / legacy payment tokens (kept for existing pages) */
   --color-primary: #006c5c;
   --color-primary-dim: #005e51;
   --color-on-primary: #ffffff;
@@ -10,6 +15,19 @@
   --color-on-secondary: #e3fff6;
   --color-secondary-container: #68fadd;
 
+  /* ── Landing brand tokens (from mobile theme.js) */
+  --color-brand-landing: #105D4B;
+  --color-brand-landing-dim: #0d4a3c;
+  --color-mint-1: #4FD1A7;
+  --color-mint-2: #1FA87A;
+  --color-mint-tint: #E6F4F0;
+  --color-mint-tint-2: #F0F9F6;
+
+  --cta-gradient: linear-gradient(135deg, #4FD1A7 0%, #1FA87A 100%);
+  --hero-gradient: linear-gradient(165deg, #0d4a3c 0%, #105D4B 55%, #0a7c63 100%);
+  --band-gradient: linear-gradient(135deg, #4FD1A7 0%, #1FA87A 55%, #105D4B 100%);
+
+  /* ── Neutrals (combined — payment-web names + landing aliases) */
   --color-background: #f8f9fa;
   --color-surface: #f8f9fa;
   --color-surface-lowest: #ffffff;
@@ -24,12 +42,22 @@
   --color-outline: #6f7a7e;
   --color-outline-variant: #abb3b7;
 
+  /* Landing aliases for the same neutrals */
+  --color-ink-strong: #111827;
+  --color-ink: #2b3437;
+  --color-ink-soft: #374151;
+  --color-ink-muted: #6B7280;
+  --color-ink-subtle: #9CA3AF;
+  --color-border: #EAEFED;
+  --color-border-soft: #EEF2F0;
+
+  /* ── Status */
   --color-error: #9f403d;
   --color-on-error: #ffffff;
   --color-error-container: #fce8e6;
-
   --color-success: #006c5c;
 
+  /* ── Spacing (legacy px alias kept for payment pages, plus modern scale) */
   --spacing-xs: 4px;
   --spacing-sm: 8px;
   --spacing-md: 16px;
@@ -37,21 +65,58 @@
   --spacing-xl: 32px;
   --spacing-2xl: 48px;
 
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 20px;
+  --space-2xl: 24px;
+  --space-3xl: 32px;
+  --space-4xl: 48px;
+  --space-5xl: 64px;
+  --space-6xl: 96px;
+
+  /* ── Radii */
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 16px;
   --radius-xl: 24px;
+  --radius-2xl: 32px;
   --radius-full: 9999px;
 
+  /* ── Shadows */
   --shadow-sm: 0 1px 2px rgba(43, 52, 55, 0.05);
   --shadow-md: 0 4px 6px rgba(43, 52, 55, 0.07);
   --shadow-lg: 0 10px 15px rgba(43, 52, 55, 0.1);
 
+  --shadow-ambient: 0 4px 32px rgba(43, 52, 55, 0.06);
+  --shadow-card: 0 2px 16px rgba(43, 52, 55, 0.04);
+  --shadow-card-lg: 0 12px 40px rgba(43, 52, 55, 0.08);
+  --shadow-cta: 0 8px 24px rgba(31, 168, 122, 0.35);
+  --shadow-cta-hover: 0 12px 32px rgba(31, 168, 122, 0.45);
+  --shadow-hero-phone: 0 40px 80px rgba(0, 0, 0, 0.28), 0 20px 40px rgba(0, 0, 0, 0.18);
+  --shadow-phone: 0 20px 50px rgba(16, 93, 75, 0.18), 0 8px 20px rgba(16, 93, 75, 0.08);
+  --shadow-receipt: 0 12px 24px rgba(0, 0, 0, 0.18);
+
+  /* ── Typography */
   --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-display: 'Manrope', var(--font-body);
+
+  /* ── Layout */
+  --max-width: 1200px;
+  --max-width-narrow: 720px;
+  --nav-height: 72px;
+
+  /* ── Motion */
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-* {
+/* ─────────────────────────────────────────────────────────────
+   Reset + base
+   ───────────────────────────────────────────────────────────── */
+
+*, *::before, *::after {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
@@ -61,6 +126,8 @@ html {
   font-size: 16px;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  scroll-behavior: smooth;
 }
 
 body {
@@ -69,29 +136,187 @@ body {
   color: var(--color-on-surface);
   line-height: 1.5;
   min-height: 100vh;
+  overflow-x: hidden;
 }
 
 #root {
   min-height: 100vh;
+  isolation: isolate;
 }
+
+img, svg { display: block; max-width: 100%; }
 
 button {
   font-family: inherit;
+  cursor: pointer;
 }
 
 a {
-  color: var(--color-primary);
+  color: var(--color-brand-landing);
   text-decoration: none;
+  transition: opacity 0.15s var(--ease);
+}
+
+a:hover { opacity: 0.78; }
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-display);
+  color: var(--color-ink-strong);
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+p { line-height: 1.6; }
+
+::selection {
+  background: var(--color-mint-1);
+  color: #ffffff;
+}
+
+:focus-visible {
+  outline: 3px solid var(--color-mint-1);
+  outline-offset: 3px;
+  border-radius: 4px;
 }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 
-/* -- Shared: brand header -- */
+/* ─────────────────────────────────────────────────────────────
+   Shared layout primitives
+   ───────────────────────────────────────────────────────────── */
+
+.container {
+  width: 100%;
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.container-narrow {
+  width: 100%;
+  max-width: var(--max-width-narrow);
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.section {
+  padding: var(--space-6xl) 0;
+  position: relative;
+}
+.section-sm { padding: var(--space-4xl) 0; }
+
+@media (max-width: 768px) {
+  .section { padding: var(--space-5xl) 0; }
+  .section-sm { padding: var(--space-3xl) 0; }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Shared type primitives
+   ───────────────────────────────────────────────────────────── */
+
+.eyebrow {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-brand-landing);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+.eyebrow-mint { color: var(--color-mint-1); }
+
+.display {
+  font-family: var(--font-display);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: var(--color-ink-strong);
+}
+
+.display-accent { color: var(--color-brand-landing); }
+
+.body-lg {
+  font-size: 18px;
+  line-height: 1.6;
+  color: var(--color-ink-muted);
+  font-weight: 500;
+}
+
+.body {
+  font-size: 16px;
+  line-height: 1.65;
+  color: var(--color-ink-muted);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Buttons — landing-scale + legacy payment .action-btn
+   ───────────────────────────────────────────────────────────── */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 52px;
+  padding: 0 28px;
+  border: none;
+  background: none;
+  border-radius: var(--radius-full);
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.1px;
+  transition: transform 0.18s var(--ease), box-shadow 0.18s var(--ease), opacity 0.18s var(--ease);
+  white-space: nowrap;
+  cursor: pointer;
+  color: inherit;
+}
+.btn:active { transform: translateY(1px); }
+
+.btn-primary {
+  background: var(--cta-gradient);
+  color: #ffffff;
+  box-shadow: var(--shadow-cta);
+}
+.btn-primary:hover { box-shadow: var(--shadow-cta-hover); transform: translateY(-1px); opacity: 1; }
+
+.btn-white {
+  background: #ffffff;
+  color: var(--color-brand-landing);
+  box-shadow: 0 12px 30px rgba(0,0,0,0.2);
+}
+.btn-white:hover { transform: translateY(-1px); box-shadow: 0 16px 40px rgba(0,0,0,0.28); opacity: 1; }
+
+.btn-ghost {
+  background: transparent;
+  color: #ffffff;
+  border: 1.5px solid rgba(255,255,255,0.35);
+}
+.btn-ghost:hover { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.55); opacity: 1; }
+
+.btn-dark {
+  background: var(--color-brand-landing);
+  color: #ffffff;
+  box-shadow: var(--shadow-card);
+}
+.btn-dark:hover { background: var(--color-brand-landing-dim); transform: translateY(-1px); opacity: 1; }
+
+.btn-lg { height: 60px; padding: 0 32px; font-size: 17px; border-radius: 18px; }
+
+@media (max-width: 768px) {
+  .btn { height: 48px; font-size: 14px; padding: 0 22px; }
+  .btn-lg { height: 56px; font-size: 16px; padding: 0 26px; }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Legacy payment-web primitives (kept for existing flow screens)
+   ───────────────────────────────────────────────────────────── */
 
 .brand-header {
   padding: var(--spacing-lg) 0 var(--spacing-md);
@@ -105,8 +330,6 @@ a {
   letter-spacing: -0.8px;
   color: var(--color-on-surface);
 }
-
-/* -- Shared: centered state cards -- */
 
 .centered-state {
   text-align: center;
@@ -157,8 +380,6 @@ a {
 }
 
 .action-btn:hover { opacity: 0.9; }
-
-/* -- Shared state modifiers -- */
 
 .error-bg { background: var(--color-error-container); }
 .error-color { color: var(--color-error); }
