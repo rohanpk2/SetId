@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     # Feature flags
     FEATURE_VIRTUAL_CARDS: bool = False
 
+    OPENAI_API_KEY: str = ""
+    OPENAI_BASE_URL: str | None = None
+    OPENAI_RECEIPT_VISION_MODEL: str = "gpt-4.1"
+    OPENAI_RECEIPT_CLEANUP_MODEL: str = "gpt-4.1-mini"
+
     GROQ_API_KEY: str = ""
     GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
     GROQ_RECEIPT_VISION_MODEL: str = "meta-llama/llama-4-scout-17b-16e-instruct"
@@ -146,12 +151,65 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    @staticmethod
+    def _looks_like_openai_api_key(value: str | None) -> bool:
+        return (value or "").strip().startswith("sk-")
+
+    @staticmethod
+    def _looks_like_groq_api_key(value: str | None) -> bool:
+        return (value or "").strip().startswith("gsk_")
+
     @property
     def effective_database_url(self) -> str:
         """Prefer DATABASE_URL_PROD when set (e.g. hosted Postgres), else DATABASE_URL."""
         if self.DATABASE_URL_PROD:
             return self.DATABASE_URL_PROD
         return self.DATABASE_URL
+
+    @property
+    def receipt_ai_uses_openai(self) -> bool:
+        if self.OPENAI_API_KEY:
+            return True
+
+        legacy_key = (self.GROQ_API_KEY or "").strip()
+        legacy_base_url = (self.GROQ_BASE_URL or "").strip().lower().rstrip("/")
+        if not legacy_key:
+            return False
+        if self._looks_like_groq_api_key(legacy_key):
+            return False
+        if not self._looks_like_openai_api_key(legacy_key):
+            return False
+
+        # If a legacy Groq key slot now contains an OpenAI key, prefer native
+        # OpenAI defaults instead of accidentally sending that key to Groq's
+        # compatibility endpoint.
+        return not legacy_base_url or legacy_base_url == "https://api.groq.com/openai/v1"
+
+    @property
+    def receipt_ai_configured(self) -> bool:
+        return bool(self.receipt_ai_api_key)
+
+    @property
+    def receipt_ai_api_key(self) -> str:
+        return (self.OPENAI_API_KEY or self.GROQ_API_KEY).strip()
+
+    @property
+    def receipt_ai_base_url(self) -> str | None:
+        if self.receipt_ai_uses_openai:
+            return (self.OPENAI_BASE_URL or "").strip() or None
+        return (self.GROQ_BASE_URL or "").strip() or None
+
+    @property
+    def receipt_ai_vision_model(self) -> str:
+        if self.receipt_ai_uses_openai:
+            return self.OPENAI_RECEIPT_VISION_MODEL
+        return self.GROQ_RECEIPT_VISION_MODEL
+
+    @property
+    def receipt_ai_cleanup_model(self) -> str:
+        if self.receipt_ai_uses_openai:
+            return self.OPENAI_RECEIPT_CLEANUP_MODEL
+        return self.GROQ_RECEIPT_CLEANUP_MODEL
 
 
 settings = Settings()

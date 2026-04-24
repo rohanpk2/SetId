@@ -26,11 +26,11 @@ def _dictionary_normalize(name: str) -> str | None:
 
 
 def _llm_normalize_name(raw_name: str, client: OpenAI | None) -> str | None:
-    if not client or not settings.GROQ_API_KEY:
+    if not client or not settings.receipt_ai_configured:
         return None
     try:
         response = client.chat.completions.create(
-            model=settings.GROQ_RECEIPT_CLEANUP_MODEL,
+            model=settings.receipt_ai_cleanup_model,
             messages=[
                 {
                     "role": "system",

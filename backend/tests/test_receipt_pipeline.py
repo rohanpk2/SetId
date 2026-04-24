@@ -1,9 +1,10 @@
-"""Deterministic receipt pipeline tests (no Groq / external APIs)."""
+"""Deterministic receipt pipeline tests (no external LLM APIs)."""
 
 from decimal import Decimal
 
 import pytest
 
+from app.core.config import Settings
 from app.services.receipt_item_normalizer import normalize_cleanup_payload
 from app.services.receipt_merge_service import merge_intermediate_parses
 from app.services.receipt_parser_service import CleanupReceiptPayload
@@ -125,3 +126,49 @@ def test_normalizer_dictionary_maps_abbreviation():
     out = normalize_cleanup_payload(cleaned, llm_client=None)
     assert out.items[0].name == "Chicken Sandwich"
 
+
+def test_receipt_ai_settings_prefer_openai_envs():
+    settings_obj = Settings(
+        _env_file=None,
+        OPENAI_API_KEY="sk-openai-test",
+        OPENAI_RECEIPT_VISION_MODEL="gpt-4.1",
+        OPENAI_RECEIPT_CLEANUP_MODEL="gpt-4.1-mini",
+        GROQ_API_KEY="gsk-legacy-test",
+    )
+
+    assert settings_obj.receipt_ai_configured is True
+    assert settings_obj.receipt_ai_uses_openai is True
+    assert settings_obj.receipt_ai_api_key == "sk-openai-test"
+    assert settings_obj.receipt_ai_base_url is None
+    assert settings_obj.receipt_ai_vision_model == "gpt-4.1"
+    assert settings_obj.receipt_ai_cleanup_model == "gpt-4.1-mini"
+
+
+def test_receipt_ai_settings_upgrade_legacy_key_slot_when_it_contains_openai_key():
+    settings_obj = Settings(
+        _env_file=None,
+        GROQ_API_KEY="sk-openai-test",
+        GROQ_BASE_URL="https://api.groq.com/openai/v1",
+    )
+
+    assert settings_obj.receipt_ai_uses_openai is True
+    assert settings_obj.receipt_ai_api_key == "sk-openai-test"
+    assert settings_obj.receipt_ai_base_url is None
+    assert settings_obj.receipt_ai_vision_model == "gpt-4.1"
+    assert settings_obj.receipt_ai_cleanup_model == "gpt-4.1-mini"
+
+
+def test_receipt_ai_settings_keep_groq_config_when_groq_key_is_present():
+    settings_obj = Settings(
+        _env_file=None,
+        GROQ_API_KEY="gsk_legacy_test",
+        GROQ_BASE_URL="https://api.groq.com/openai/v1",
+        GROQ_RECEIPT_VISION_MODEL="llama-vision",
+        GROQ_RECEIPT_CLEANUP_MODEL="oss-cleanup",
+    )
+
+    assert settings_obj.receipt_ai_uses_openai is False
+    assert settings_obj.receipt_ai_api_key == "gsk_legacy_test"
+    assert settings_obj.receipt_ai_base_url == "https://api.groq.com/openai/v1"
+    assert settings_obj.receipt_ai_vision_model == "llama-vision"
+    assert settings_obj.receipt_ai_cleanup_model == "oss-cleanup"

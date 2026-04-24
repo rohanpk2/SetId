@@ -184,7 +184,7 @@ CLEANUP_RESPONSE_FORMAT = {
         # `strict: False` + loosened `required` so that smaller LLMs that
         # occasionally misplace fields (e.g. putting `confidence` on the
         # item instead of the top level) don't cause a hard 400 from the
-        # Groq schema validator. The Python-side `CleanupReceiptPayload`
+        # API-side schema validator. The Python-side `CleanupReceiptPayload`
         # still normalizes and defaults missing values downstream.
         "strict": False,
         "schema": {
@@ -229,7 +229,7 @@ CLEANUP_RESPONSE_FORMAT = {
                 },
             },
             # `confidence` removed from required — smaller models sometimes
-            # misplace it (e.g. onto items), which triggers a 400 from Groq's
+            # misplace it (e.g. onto items), which triggers a 400 from the API's
             # schema validator. We default it to 0.5 in Python when missing.
             "required": ["merchant_name", "subtotal", "tax", "total", "items"],
             "additionalProperties": True,
@@ -392,14 +392,13 @@ PREPARSER_CONFIDENCE_THRESHOLD = 0.85
 class ReceiptParserService:
     def __init__(self, db: Session):
         self.db = db
-        self._client = (
-            OpenAI(
-                api_key=settings.GROQ_API_KEY,
-                base_url=settings.GROQ_BASE_URL,
-            )
-            if settings.GROQ_API_KEY
-            else None
-        )
+        if settings.receipt_ai_configured:
+            client_kwargs = {"api_key": settings.receipt_ai_api_key}
+            if settings.receipt_ai_base_url:
+                client_kwargs["base_url"] = settings.receipt_ai_base_url
+            self._client = OpenAI(**client_kwargs)
+        else:
+            self._client = None
 
     def save_upload(
         self,
@@ -853,7 +852,7 @@ class ReceiptParserService:
         self, file_path: str, content_type: str
     ) -> tuple[dict | None, str]:
         if not self._client:
-            raise ValueError("GROQ_API_KEY is not configured")
+            raise ValueError("Receipt OCR API key is not configured")
 
         if not os.path.exists(file_path):
             raise ValueError("Uploaded receipt file is missing from storage")
@@ -867,7 +866,7 @@ class ReceiptParserService:
 
         try:
             response = self._client.chat.completions.create(
-                model=settings.GROQ_RECEIPT_VISION_MODEL,
+                model=settings.receipt_ai_vision_model,
                 messages=[
                     {
                         "role": "user",
@@ -907,7 +906,7 @@ class ReceiptParserService:
         content_type: str | None = None,
     ) -> str:
         if not self._client:
-            raise ValueError("GROQ_API_KEY is not configured")
+            raise ValueError("Receipt OCR API key is not configured")
 
         if not os.path.exists(file_path):
             raise ValueError("Uploaded receipt file is missing from storage")
@@ -921,7 +920,7 @@ class ReceiptParserService:
             ct = mimetypes.guess_type(file_path)[0] or "image/jpeg"
 
         response = self._client.chat.completions.create(
-            model=settings.GROQ_RECEIPT_VISION_MODEL,
+            model=settings.receipt_ai_vision_model,
             messages=[
                 {
                     "role": "user",
@@ -1018,7 +1017,7 @@ class ReceiptParserService:
         preparsed: dict | None,
     ) -> CleanupReceiptPayload:
         if not self._client:
-            raise ValueError("GROQ_API_KEY is not configured")
+            raise ValueError("Receipt OCR API key is not configured")
 
         fallback = self._cleanup_payload_from_preparser(preparsed or {})
         user_payload = {
@@ -1028,7 +1027,7 @@ class ReceiptParserService:
 
         for _ in range(2):
             response = self._client.chat.completions.create(
-                model=settings.GROQ_RECEIPT_CLEANUP_MODEL,
+                model=settings.receipt_ai_cleanup_model,
                 messages=[
                     {"role": "system", "content": CLEANUP_SYSTEM_PROMPT},
                     {"role": "user", "content": json.dumps(user_payload)},

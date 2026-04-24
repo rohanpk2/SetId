@@ -135,7 +135,7 @@ pip install -r requirements.txt
 
 # 3. Copy and edit env
 cp .env.example .env
-# Edit DATABASE_URL, JWT_SECRET_KEY, STRIPE keys, and GROQ_API_KEY
+# Edit DATABASE_URL, JWT_SECRET_KEY, STRIPE keys, and OPENAI_API_KEY
 
 # 4. Start Postgres (requires a local instance or use Docker just for DB)
 docker compose up db -d
@@ -167,6 +167,11 @@ STRIPE_SECRET_KEY=sk_test_...
 STRIPE_WEBHOOK_SECRET=whsec_...
 STRIPE_PUBLISHABLE_KEY=pk_test_...
 
+OPENAI_API_KEY=sk-proj-...
+OPENAI_RECEIPT_VISION_MODEL=gpt-4.1
+OPENAI_RECEIPT_CLEANUP_MODEL=gpt-4.1-mini
+
+# Optional legacy Groq fallback
 GROQ_API_KEY=gsk_...
 GROQ_BASE_URL=https://api.groq.com/openai/v1
 GROQ_RECEIPT_VISION_MODEL=meta-llama/llama-4-scout-17b-16e-instruct
@@ -264,10 +269,10 @@ Authentication uses stateless JWT tokens (Bearer scheme).
 
 ## Receipt Parsing
 
-`POST /bills/{bill_id}/receipt/parse` uses a two-step Groq-backed AI pipeline in `ReceiptParserService`:
+`POST /bills/{bill_id}/receipt/parse` uses a two-step AI pipeline in `ReceiptParserService`:
 
-1. A Groq vision-capable model extracts raw receipt text from the uploaded image
-2. A Groq cleanup pass converts that OCR text into structured JSON
+1. A vision-capable model extracts raw receipt text from the uploaded image
+2. A cleanup pass converts that OCR text into structured JSON
 3. The backend normalizes that JSON into `ReceiptItem` rows plus bill subtotal/tax/total
 
 ---
@@ -462,7 +467,7 @@ const getDashboard = async (token) => {
 
 2. **Invite tokens are in-memory** (`BillService._invite_tokens` dict). This resets on server restart and doesn't work across multiple API instances. For production, move tokens to a `bill_invites` DB table or Redis.
 
-3. **Receipt parsing uses Groq.** The parser uploads receipt images to a vision-capable Groq model for raw OCR, then runs a structured cleanup pass to produce line items, tax, and total.
+3. **Receipt parsing uses OpenAI by default.** Set `OPENAI_API_KEY` to use native OpenAI models for OCR and cleanup. Legacy `GROQ_*` settings still work as a fallback.
 
 4. **Tax/tip/fee distribution** is proportional to each member's item subtotal. Members with zero assigned items get zero shares.
 
