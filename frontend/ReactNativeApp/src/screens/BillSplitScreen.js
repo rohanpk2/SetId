@@ -400,10 +400,15 @@ export default function BillSplitScreen({ navigation, route }) {
           {
             text: 'Share Link',
             onPress: async () => {
+              // Pass ONLY `message` (with the URL embedded). If we pass
+              // `url` as well, iOS's share sheet hands both to iMessage
+              // which then composes two bubbles: the `message` body +
+              // a standalone link card for the `url`. Recipients see
+              // the invite link twice. Embedding the URL in the
+              // message text yields a single bubble with one preview.
               await Share.share({
                 message: `Join me to split ${billTitle}!\n\n${inviteLink}`,
                 title: `Split ${billTitle} on Settld`,
-                url: inviteLink,
               });
             },
           },
