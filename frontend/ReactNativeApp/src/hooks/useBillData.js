@@ -284,15 +284,16 @@ export function useBillData(billId) {
 
     const maybeMutationId = data.client_mutation_id;
     const isOwnEvent = maybeMutationId && ownMutationIdsRef.current.has(maybeMutationId);
-    if (isOwnEvent) {
-      // We already applied authoritative state from the mutation HTTP
-      // response; dropping the echo avoids a redundant setState.
-      ownMutationIdsRef.current.delete(maybeMutationId);
-      return;
-    }
+    const hasAuthoritativeItem = Array.isArray(data.item_assignments);
+
+    // Clear the own-mutation tag up-front so we don't leak ids when we
+    // decide to process the event anyway.
+    if (isOwnEvent) ownMutationIdsRef.current.delete(maybeMutationId);
 
     const action = data.action;
     if (action === 'full_sync') {
+      // Always apply full_sync even if it's our own — it may contain
+      // sibling items that our HTTP response didn't cover (e.g. auto-split).
       applyFullAssignmentList(data.assignments ?? []);
       return;
     }
@@ -300,13 +301,20 @@ export function useBillData(billId) {
     const itemId = data.receipt_item_id;
     if (!itemId) return;
 
-    if (Array.isArray(data.item_assignments)) {
+    if (hasAuthoritativeItem) {
+      // Idempotent: apply even for own events. This is the safety net
+      // when the POST response didn't carry `item_assignments` (old
+      // backend) or when the broadcast arrives before the response —
+      // without it, `serverAssignments` and the subtotal can stay stale.
       applyItemAssignments(itemId, data.item_assignments);
       return;
     }
 
-    // Legacy compact delta (no item_assignments). Fall back to chip-only
-    // toggling — subtotals will drift until the next focus refetch.
+    // Legacy compact delta (no item_assignments). If this is our own echo
+    // we already handled it via the HTTP response — skip to avoid a
+    // redundant chip-toggle setState.
+    if (isOwnEvent) return;
+
     const memberId = data.bill_member_id;
     const assignmentId = data.assignment_id;
     if (!memberId) return;
