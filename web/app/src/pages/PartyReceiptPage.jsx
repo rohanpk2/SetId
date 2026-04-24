@@ -15,14 +15,17 @@ export default function PartyReceiptPage() {
 
   const [receipt, setReceipt] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [claiming, setClaiming] = useState(null);
   const [error, setError] = useState(null);
   const wsRef = useRef(null);
   const pollRef = useRef(null);
   // Set of client_mutation_ids this tab initiated. Echoed broadcasts that
-  // carry one of these are ignored — the tab already has the up-to-date
-  // receipt from the POST /claim response and doesn't need to refetch.
+  // carry one of these are ignored — the tab already has authoritative
+  // state from the optimistic apply (or the later broadcast from the
+  // other side for remote claims).
   const ownMutationIdsRef = useRef(new Set());
+  // Per-item mutation queue so rapid taps on the same item serialize
+  // server-side without racing. Different items run in parallel.
+  const mutationQueueRef = useRef({});
   // Live receipt ref so the WS handler can patch state without triggering
   // a re-render through the effect's dependency list.
   const receiptRef = useRef(null);
@@ -60,14 +63,42 @@ export default function PartyReceiptPage() {
       fetchReceipt();
       return;
     }
-    const { action, receipt_item_id, bill_member_id, assignment_id } = data;
-    if (!action || !receipt_item_id || !bill_member_id) return;
+    const { action, receipt_item_id, bill_member_id, assignment_id, item_assignments } = data;
+    if (!action || !receipt_item_id) return;
 
     setReceipt((prev) => {
       if (!prev) return prev;
       const items = prev.items || [];
       const nextItems = items.map((item) => {
         if (item.id !== receipt_item_id) return item;
+        // Authoritative path: the broadcast shipped the full post-mutation
+        // assignment list for this item. Rebuild `claimed_by` from it so
+        // per-person amounts reflect equal-split sibling recalcs.
+        if (Array.isArray(item_assignments)) {
+          const serverClaims = item_assignments.map((a) => ({
+            member_id: a.bill_member_id,
+            nickname: a.member_nickname,
+            name: a.member_nickname,
+            assignment_id: a.id,
+            share_type: a.share_type,
+            amount_owed: a.amount_owed,
+          }));
+          // Preserve any still-in-flight optimistic claim by THIS guest
+          // that hasn't reached the server yet. Without this, a concurrent
+          // claim from another guest whose broadcast arrives BEFORE our
+          // POST commits would briefly wipe our chip off the item.
+          const serverNicks = new Set(serverClaims.map((c) => c.nickname));
+          const preservedOptimistic = (item.claimed_by || []).filter(
+            (c) => c.optimistic && !serverNicks.has(c.nickname) && !serverNicks.has(c.name),
+          );
+          return {
+            ...item,
+            claimed_by: [...serverClaims, ...preservedOptimistic],
+          };
+        }
+        // Legacy compact delta fallback — chip-only update, amounts may
+        // drift until the next fetchReceipt.
+        if (!bill_member_id) return item;
         const claimedBy = item.claimed_by || [];
         if (action === 'added') {
           if (claimedBy.some((c) => c.member_id === bill_member_id)) return item;
@@ -75,15 +106,7 @@ export default function PartyReceiptPage() {
             ...item,
             claimed_by: [
               ...claimedBy,
-              {
-                member_id: bill_member_id,
-                // The delta intentionally doesn't ship nickname/amount — we
-                // leave them undefined here; a follow-up fetchReceipt on
-                // focus or a subsequent claim response will fill them in.
-                assignment_id,
-                share_type: 'equal',
-                amount_owed: '0',
-              },
+              { member_id: bill_member_id, assignment_id, share_type: 'equal', amount_owed: '0' },
             ],
           };
         }
@@ -192,27 +215,85 @@ export default function PartyReceiptPage() {
     };
   }, [token, fetchReceipt, applyAssignmentDelta]);
 
-  const handleClaim = async (itemId, action) => {
+  // Optimistic equal-split recalc. Mirrors what the server does in
+  // `_recalculate_equal_splits_for_item` so the UI can update synchronously
+  // on tap without waiting for the network round-trip.
+  const optimisticallyToggleClaim = useCallback((itemId, action) => {
+    setReceipt((prev) => {
+      if (!prev) return prev;
+      const items = prev.items || [];
+      const nextItems = items.map((item) => {
+        if (item.id !== itemId) return item;
+        const total = parseFloat(item.total_price || item.unit_price || 0) || 0;
+        const claimedBy = item.claimed_by || [];
+        const meIdx = claimedBy.findIndex(
+          (c) => c.nickname === memberName || c.name === memberName,
+        );
+
+        let nextClaimedBy;
+        if (action === 'claim') {
+          if (meIdx >= 0) return item;
+          nextClaimedBy = [
+            ...claimedBy,
+            {
+              nickname: memberName,
+              name: memberName,
+              share_type: 'equal',
+              amount_owed: '0',
+              optimistic: true,
+            },
+          ];
+        } else {
+          if (meIdx < 0) return item;
+          nextClaimedBy = [
+            ...claimedBy.slice(0, meIdx),
+            ...claimedBy.slice(meIdx + 1),
+          ];
+        }
+
+        const count = nextClaimedBy.length;
+        const per = count > 0 ? (total / count).toFixed(2) : '0';
+        nextClaimedBy = nextClaimedBy.map((c) => ({ ...c, amount_owed: per }));
+        return { ...item, claimed_by: nextClaimedBy };
+      });
+      return { ...prev, items: nextItems };
+    });
+  }, [memberName]);
+
+  const handleClaim = useCallback((itemId, action) => {
     const mutationId = newClientMutationId();
     ownMutationIdsRef.current.add(mutationId);
-    console.log('[API] POST /party/' + token + '/claim', { receipt_item_id: itemId, action, mutationId });
-    setClaiming(itemId);
-    try {
-      const data = await claimItems(
-        token,
-        [{ receipt_item_id: itemId, action }],
-        { clientMutationId: mutationId },
-      );
-      console.log('[API] ✅ Claim response:', data);
-      setReceipt(data);
-    } catch (err) {
-      ownMutationIdsRef.current.delete(mutationId);
-      console.error('[API] ❌ Claim error:', err);
-      setError(err.message);
-    } finally {
-      setClaiming(null);
-    }
-  };
+
+    // Apply the optimistic update IMMEDIATELY — the chip flips and the
+    // per-person amounts recompute before React yields. The network call
+    // runs in the background; the WS broadcast reconciles if our math
+    // diverges from the server (which it shouldn't for equal splits).
+    optimisticallyToggleClaim(itemId, action);
+
+    const prev = mutationQueueRef.current[itemId] || Promise.resolve();
+    const next = prev.then(async () => {
+      try {
+        await claimItems(
+          token,
+          [{ receipt_item_id: itemId, action }],
+          { clientMutationId: mutationId },
+        );
+        // Deliberately NOT applying the POST response here. The response
+        // is the full receipt snapshot at commit time; blindly setReceipt
+        // would clobber any subsequent optimistic tap. The WS broadcast
+        // carries the same authoritative per-item state and is applied
+        // (or skipped as our own echo) in `applyAssignmentDelta`.
+      } catch (err) {
+        ownMutationIdsRef.current.delete(mutationId);
+        console.error('[API] ❌ Claim error:', err);
+        setError(err.message);
+        // Revert to server truth — simpler than trying to invert our
+        // optimistic op when multiple mutations may have stacked.
+        fetchReceipt();
+      }
+    });
+    mutationQueueRef.current[itemId] = next.catch(() => {});
+  }, [token, optimisticallyToggleClaim, fetchReceipt]);
 
   const handleContinue = () => {
     navigate(`${basePath}/${token}/pay`, {
@@ -279,14 +360,12 @@ export default function PartyReceiptPage() {
               ?.filter(c => c.name !== memberName && c.nickname !== memberName)
               .map(c => c.name || c.nickname)
               .join(', ');
-            const isBusy = claiming === item.id;
 
             return (
               <button
                 key={item.id}
                 className={`claim-item ${isMine ? 'claimed' : ''}`}
                 onClick={() => handleClaim(item.id, isMine ? 'unclaim' : 'claim')}
-                disabled={isBusy}
                 aria-pressed={isMine}
               >
                 <div className="claim-item-left">

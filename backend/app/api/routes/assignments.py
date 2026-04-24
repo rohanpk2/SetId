@@ -3,12 +3,13 @@ import logging
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.api.deps import get_current_user
 from app.core.config import settings
 from app.db.session import SessionLocal, get_db
 from app.models.bill import Bill
+from app.models.item_assignment import ItemAssignment
 from app.models.user import User
 from app.core.response import success_response, error_response
 from app.schemas.item_assignment import (
@@ -56,6 +57,7 @@ def _delta_payload(
     bill_member_id: str | None = None,
     assignment_id: str | None = None,
     client_mutation_id: str | None = None,
+    item_assignments: list[dict] | None = None,
 ) -> dict:
     payload: dict = {"action": action}
     if receipt_item_id is not None:
@@ -66,7 +68,31 @@ def _delta_payload(
         payload["assignment_id"] = assignment_id
     if client_mutation_id is not None:
         payload["client_mutation_id"] = client_mutation_id
+    if item_assignments is not None:
+        # Post-mutation authoritative assignment list for the affected item.
+        # Lets clients converge subtotals, per-member amounts, and equal-split
+        # sibling recomputations without a separate REST round-trip.
+        payload["item_assignments"] = item_assignments
     return payload
+
+
+def _load_item_assignments(db: Session, item_ids: set[str]) -> dict[str, list[dict]]:
+    """Fetch all current assignments for the given items, grouped by item."""
+    if not item_ids:
+        return {}
+    rows = (
+        db.query(ItemAssignment)
+        .filter(ItemAssignment.receipt_item_id.in_(list(item_ids)))
+        .options(
+            joinedload(ItemAssignment.item),
+            joinedload(ItemAssignment.member),
+        )
+        .all()
+    )
+    by_item: dict[str, list[dict]] = {str(iid): [] for iid in item_ids}
+    for a in rows:
+        by_item.setdefault(str(a.receipt_item_id), []).append(_assignment_out(a))
+    return by_item
 
 
 def _broadcast_delta_now(bill_id: str, payload: dict) -> None:
@@ -151,16 +177,23 @@ def create_assignments(
         a.member_nickname = a.member.nickname if a.member else None
         results.append(AssignmentOut.model_validate(a).model_dump())
 
+    # Load post-commit per-item state once so every delta we emit carries
+    # authoritative sibling data (amounts recomputed after equal-split resize).
+    affected_item_ids = {str(r.get("receipt_item_id", "")) for r in results if r.get("receipt_item_id")}
+    item_assignments_map = _load_item_assignments(db, affected_item_ids)
+
     # Broadcast BEFORE scheduling SMS so the fan-out never delays the WS frame.
     for r in results:
+        item_id = str(r.get("receipt_item_id", ""))
         _broadcast_delta_now(
             str(bill_id),
             _delta_payload(
                 "added",
-                str(r.get("receipt_item_id", "")),
+                item_id,
                 str(r.get("bill_member_id", "")),
                 str(r.get("id", "")),
                 body.client_mutation_id,
+                item_assignments=item_assignments_map.get(item_id),
             ),
         )
 
@@ -173,7 +206,10 @@ def create_assignments(
                 str(current_user.id),
             )
 
-    return success_response(data=results, message="Assignments created")
+    return success_response(
+        data={"assignments": results, "item_assignments": item_assignments_map},
+        message="Assignments created",
+    )
 
 
 @router.get("/assignments")
@@ -220,19 +256,26 @@ def update_assignment(
     assignment.item_name = assignment.item.name if assignment.item else None
     assignment.member_nickname = assignment.member.nickname if assignment.member else None
 
+    item_id = str(assignment.receipt_item_id)
+    item_assignments_map = _load_item_assignments(db, {item_id})
+
     _broadcast_delta_now(
         str(bill_id),
         _delta_payload(
             "updated",
-            str(assignment.receipt_item_id),
+            item_id,
             str(assignment.bill_member_id),
             str(assignment.id),
             body.client_mutation_id,
+            item_assignments=item_assignments_map.get(item_id),
         ),
     )
 
     return success_response(
-        data=AssignmentOut.model_validate(assignment).model_dump(),
+        data={
+            "assignment": AssignmentOut.model_validate(assignment).model_dump(),
+            "item_assignments": item_assignments_map,
+        },
         message="Assignment updated",
     )
 
@@ -259,6 +302,8 @@ def delete_assignment(
     except ValueError:
         return error_response("NOT_FOUND", "Assignment not found", 404)
 
+    item_assignments_map = _load_item_assignments(db, {item_id})
+
     _broadcast_delta_now(
         str(bill_id),
         _delta_payload(
@@ -267,10 +312,14 @@ def delete_assignment(
             member_id,
             str(assignment_id),
             client_mutation_id,
+            item_assignments=item_assignments_map.get(item_id, []),
         ),
     )
 
-    return success_response(message="Assignment deleted")
+    return success_response(
+        data={"item_assignments": item_assignments_map},
+        message="Assignment deleted",
+    )
 
 
 @router.post("/assignments/auto-split")

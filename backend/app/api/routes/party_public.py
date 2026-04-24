@@ -146,6 +146,33 @@ def _broadcast_delta_now(bill_id: str, payload: dict) -> None:
     schedule_broadcast(bill_ws_manager.broadcast(bill_id, "assignment_update", payload))
 
 
+def _load_item_assignments(db: Session, item_ids: set[str]) -> dict[str, list[dict]]:
+    """Post-commit assignment snapshot per item, so broadcasts can carry
+    authoritative amounts (including equal-split sibling recalc)."""
+    if not item_ids:
+        return {}
+    from app.schemas.item_assignment import AssignmentOut
+    from sqlalchemy.orm import joinedload as _joinedload
+
+    rows = (
+        db.query(ItemAssignment)
+        .filter(ItemAssignment.receipt_item_id.in_(list(item_ids)))
+        .options(
+            _joinedload(ItemAssignment.item),
+            _joinedload(ItemAssignment.member),
+        )
+        .all()
+    )
+    by_item: dict[str, list[dict]] = {str(iid): [] for iid in item_ids}
+    for a in rows:
+        a.item_name = a.item.name if a.item else None
+        a.member_nickname = a.member.nickname if a.member else None
+        by_item.setdefault(str(a.receipt_item_id), []).append(
+            AssignmentOut.model_validate(a).model_dump(mode="json")
+        )
+    return by_item
+
+
 async def _broadcast_event(bill_id: str, event: str, data: dict) -> None:
     try:
         await bill_ws_manager.broadcast(bill_id, event, data)
@@ -424,6 +451,11 @@ def claim_items(
 
     db.commit()
 
+    # Load post-commit authoritative per-item state so every delta carries
+    # the recomputed equal-split amounts for siblings — receivers can
+    # reconcile subtotals + per-member totals without a separate refetch.
+    item_assignments_map = _load_item_assignments(db, affected_item_ids)
+
     # Emit compact deltas — other guests apply these in place without a full
     # `/party/:token/receipt` round-trip. The originating client's
     # `client_mutation_id` is echoed back so it suppresses its own event
@@ -434,6 +466,7 @@ def claim_items(
             "receipt_item_id": item_id,
             "bill_member_id": member_id_str,
             "assignment_id": assignment_id,
+            "item_assignments": item_assignments_map.get(item_id, []),
         }
         if body.client_mutation_id is not None:
             payload["client_mutation_id"] = body.client_mutation_id

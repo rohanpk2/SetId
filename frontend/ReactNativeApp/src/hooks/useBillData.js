@@ -229,31 +229,65 @@ export function useBillData(billId) {
     setAssignmentMap(map);
   }, [items]);
 
-  /** Apply a compact `assignment_update` delta to local state without a
-   *  REST round-trip. Skips events this client originated (echo suppression).
+  /** Apply authoritative per-item assignment state from the server. This
+   *  keeps `serverAssignments` (used for subtotals + per-member amounts)
+   *  in sync alongside the chip list, including equal-split sibling
+   *  recalculations that happen when a new member is added/removed. */
+  const applyItemAssignments = useCallback((itemId, itemAssignments) => {
+    if (!itemId) return;
+    const list = Array.isArray(itemAssignments) ? itemAssignments : [];
+
+    setServerAssignments((prev) => {
+      const withoutItem = prev.filter((a) => a.receipt_item_id !== itemId);
+      return [...withoutItem, ...list];
+    });
+
+    setAssignmentMap((prev) => {
+      const memberIds = [];
+      list.forEach((a) => {
+        if (!memberIds.includes(a.bill_member_id)) memberIds.push(a.bill_member_id);
+      });
+      return { ...prev, [itemId]: memberIds };
+    });
+
+    const newIdMap = { ...serverAssignmentIds.current };
+    Object.keys(newIdMap).forEach((key) => {
+      if (key.startsWith(`${itemId}::`)) delete newIdMap[key];
+    });
+    list.forEach((a) => {
+      const key = `${itemId}::${a.bill_member_id}`;
+      if (!newIdMap[key]) newIdMap[key] = [];
+      if (!newIdMap[key].includes(a.id)) newIdMap[key].push(a.id);
+    });
+    serverAssignmentIds.current = newIdMap;
+  }, []);
+
+  /** Apply an `assignment_update` delta to local state without a REST
+   *  round-trip. The broadcast payload carries `item_assignments` — the
+   *  full post-mutation assignment list for the affected item — so
+   *  re-applying is idempotent and safe even for events we originated
+   *  (we may have already updated locally from the mutation HTTP response).
    *
    *  Payload shapes we accept:
-   *    - Delta:        { action: 'added'|'removed'|'updated',
-   *                      receipt_item_id, bill_member_id, assignment_id,
-   *                      client_mutation_id? }
-   *    - Full sync:    { action: 'full_sync', assignments: [...] }
-   *    - Legacy array: [AssignmentOut, ...]  (pre-delta server payload)
+   *    - Per-item delta: { action, receipt_item_id, item_assignments, ... }
+   *    - Full sync:      { action: 'full_sync', assignments: [...] }
+   *    - Legacy array:   [AssignmentOut, ...] (pre-delta server payload)
    */
   const applyAssignmentDelta = useCallback((data) => {
     if (!data) return;
 
-    const maybeMutationId =
-      data && typeof data === 'object' && !Array.isArray(data)
-        ? data.client_mutation_id
-        : null;
-    if (maybeMutationId && ownMutationIdsRef.current.has(maybeMutationId)) {
-      ownMutationIdsRef.current.delete(maybeMutationId);
-      return;
-    }
-
     if (Array.isArray(data)) {
       if (data.length === 0) return;
       applyFullAssignmentList(data);
+      return;
+    }
+
+    const maybeMutationId = data.client_mutation_id;
+    const isOwnEvent = maybeMutationId && ownMutationIdsRef.current.has(maybeMutationId);
+    if (isOwnEvent) {
+      // We already applied authoritative state from the mutation HTTP
+      // response; dropping the echo avoids a redundant setState.
+      ownMutationIdsRef.current.delete(maybeMutationId);
       return;
     }
 
@@ -264,10 +298,18 @@ export function useBillData(billId) {
     }
 
     const itemId = data.receipt_item_id;
+    if (!itemId) return;
+
+    if (Array.isArray(data.item_assignments)) {
+      applyItemAssignments(itemId, data.item_assignments);
+      return;
+    }
+
+    // Legacy compact delta (no item_assignments). Fall back to chip-only
+    // toggling — subtotals will drift until the next focus refetch.
     const memberId = data.bill_member_id;
     const assignmentId = data.assignment_id;
-    if (!itemId || !memberId) return;
-
+    if (!memberId) return;
     const key = `${itemId}::${memberId}`;
 
     if (action === 'added') {
@@ -293,18 +335,14 @@ export function useBillData(billId) {
         };
       });
       if (assignmentId) {
-        const remaining = (serverAssignmentIds.current[key] || []).filter(
+        serverAssignmentIds.current[key] = (serverAssignmentIds.current[key] || []).filter(
           (id) => id !== assignmentId,
         );
-        serverAssignmentIds.current[key] = remaining;
       } else {
         serverAssignmentIds.current[key] = [];
       }
     }
-    // `updated` doesn't change the member-chip membership the UI renders,
-    // so nothing to do here for the chip view. Amounts will be picked up
-    // by the next focus refetch or balance screen load.
-  }, [applyFullAssignmentList]);
+  }, [applyFullAssignmentList, applyItemAssignments]);
 
   const handleToggleMember = useCallback((itemId, memberId) => {
     const key = `${itemId}::${memberId}`;
@@ -327,10 +365,11 @@ export function useBillData(billId) {
     const prevPromise = mutationQueueRef.current[key] || Promise.resolve();
     const nextPromise = prevPromise.then(async () => {
       try {
+        let itemAssignmentsMap = null;
         if (has) {
           const ids = serverAssignmentIds.current[key] || [];
           if (ids.length > 0) {
-            await Promise.all(
+            const responses = await Promise.all(
               ids.map((id) => {
                 const mutationId = newClientMutationId();
                 ownMutationIdsRef.current.add(mutationId);
@@ -342,6 +381,13 @@ export function useBillData(billId) {
                   });
               }),
             );
+            // Use the last successful delete's authoritative state —
+            // they're sequential mutations of the same item, so later
+            // wins.
+            for (const res of responses) {
+              const map = res?.data?.item_assignments;
+              if (map) itemAssignmentsMap = map;
+            }
           }
           serverAssignmentIds.current[key] = [];
         } else {
@@ -355,7 +401,13 @@ export function useBillData(billId) {
             { clientMutationId: mutationId },
           );
           const payload = res?.data ?? res;
-          const createdList = Array.isArray(payload) ? payload : [payload];
+          // Response shape: { assignments: [...], item_assignments: {itemId: [...]} }
+          // with a backward-compatible fallback to the legacy array shape.
+          const createdList = Array.isArray(payload)
+            ? payload
+            : Array.isArray(payload?.assignments)
+              ? payload.assignments
+              : [payload];
           const newIds = createdList
             .filter(Boolean)
             .map((a) => a?.id)
@@ -364,6 +416,20 @@ export function useBillData(billId) {
             ...(serverAssignmentIds.current[key] || []),
             ...newIds,
           ];
+          if (payload && payload.item_assignments) {
+            itemAssignmentsMap = payload.item_assignments;
+          }
+        }
+
+        // Apply authoritative per-item state to `serverAssignments` so
+        // subtotals and per-member amounts update as the equal-split
+        // siblings get recomputed server-side. Without this, the chips
+        // toggle instantly but the subtotal row stays stale until the
+        // next focus refetch.
+        if (itemAssignmentsMap) {
+          Object.entries(itemAssignmentsMap).forEach(([iid, list]) => {
+            applyItemAssignments(iid, list);
+          });
         }
       } catch (err) {
         console.warn('[TOGGLE] mutation failed, reverting', err);
@@ -388,7 +454,7 @@ export function useBillData(billId) {
     nextPromise.finally(() => {
       inFlightMutationsRef.current = Math.max(0, inFlightMutationsRef.current - 1);
     });
-  }, [assignmentMap, billId]);
+  }, [assignmentMap, billId, applyItemAssignments]);
 
   return {
     // State
