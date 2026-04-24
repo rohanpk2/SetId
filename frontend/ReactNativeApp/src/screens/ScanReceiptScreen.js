@@ -6,16 +6,15 @@ import {
   StyleSheet,
   Dimensions,
   Animated,
-  Platform,
   ActivityIndicator,
   Alert,
-  ScrollView,
   Image,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as Haptics from 'expo-haptics';
 import { colors, radii, shadows } from '../theme';
 import { receipts } from '../services/api';
 import * as ImagePicker from 'expo-image-picker';
@@ -58,23 +57,6 @@ function ScanLine() {
   );
 }
 
-function PulsingDot() {
-  const opacity = useRef(new Animated.Value(1)).current;
-
-  useEffect(() => {
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(opacity, { toValue: 0.3, duration: 800, useNativeDriver: true }),
-        Animated.timing(opacity, { toValue: 1, duration: 800, useNativeDriver: true }),
-      ]),
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [opacity]);
-
-  return <Animated.View style={[styles.pulsingDot, { opacity }]} />;
-}
-
 function CornerBracket({ position }) {
   const posStyles = {
     topLeft: { top: -2, left: -2, borderTopWidth: 4, borderLeftWidth: 4, borderTopLeftRadius: 10 },
@@ -97,7 +79,6 @@ export default function ScanReceiptScreen({ navigation, route }) {
   const [uploading, setUploading] = useState(false);
   const [parsing, setParsing] = useState(false);
   const [capturing, setCapturing] = useState(false);
-  const [statusText, setStatusText] = useState('Line up the receipt, then tap Capture');
   const [parsedData, setParsedData] = useState(null);
   const [queuedImages, setQueuedImages] = useState([]);
   // URI of the most recently captured still. While non-null, we render this
@@ -113,19 +94,6 @@ export default function ScanReceiptScreen({ navigation, route }) {
     autoRequestedPermission.current = true;
     requestPermission();
   }, [permission, requestPermission]);
-
-  useEffect(() => {
-    if (parsedData || uploading || parsing) return;
-    if (!queuedImages.length) {
-      setStatusText('Line up the receipt, then tap Capture');
-      return;
-    }
-    if (queuedImages.length === 1) {
-      setStatusText('Captured. Tap Process to analyze, or add another page.');
-      return;
-    }
-    setStatusText(`${queuedImages.length} pages captured. Ready to process.`);
-  }, [parsedData, parsing, queuedImages.length, uploading]);
 
   const enqueueReceiptImage = useCallback((uri, mimeType = 'image/jpeg', fileName = 'receipt.jpg') => {
     const ext = mimeType === 'image/png' ? 'png' : 'jpg';
@@ -145,26 +113,18 @@ export default function ScanReceiptScreen({ navigation, route }) {
       return;
     }
 
-    let cleanupStatusTimer;
     try {
       setUploading(true);
       // Upload pages in order. First request replaces prior receipt; remaining requests append.
       for (let i = 0; i < queuedImages.length; i += 1) {
         const isAppend = i > 0;
-        setStatusText(`Uploading page ${i + 1} of ${queuedImages.length}…`);
         await receipts.upload(billId, queuedImages[i], { append: isAppend });
       }
       setUploading(false);
 
       setParsing(true);
       // Parse once after all pages are uploaded so backend can run merge/dedupe totals.
-      setStatusText('Extracting text…');
-      cleanupStatusTimer = setTimeout(() => {
-        setStatusText('Cleaning receipt…');
-      }, 900);
-
       const parseRes = await receipts.parse(billId);
-      clearTimeout(cleanupStatusTimer);
 
       // Expand any multi-quantity lines into individual quantity=1 rows so
       // each unit can be assigned to a different member. "2 Chicken
@@ -192,8 +152,6 @@ export default function ScanReceiptScreen({ navigation, route }) {
       );
 
       if (needsExpansion) {
-        setStatusText('Splitting items by unit…');
-
         const deletes = [];
         const creates = [];
 
@@ -241,16 +199,13 @@ export default function ScanReceiptScreen({ navigation, route }) {
       }
 
       setParsing(false);
-      setStatusText('Receipt parsed!');
 
       setTimeout(() => {
         navigation.navigate('BillSplit', { billId, refresh: Date.now() });
       }, 800);
     } catch (err) {
-      if (cleanupStatusTimer) clearTimeout(cleanupStatusTimer);
       setUploading(false);
       setParsing(false);
-      setStatusText('Line up the receipt, then tap Capture');
       // Unfreeze so the user can re-aim and retry — otherwise they'd be
       // stuck staring at a frozen image with no obvious next step.
       setLastCaptureUri(null);
@@ -264,9 +219,19 @@ export default function ScanReceiptScreen({ navigation, route }) {
       return;
     }
 
+    // Fire a haptic + "hold steady" UI immediately so the user knows
+    // the tap registered and DOESN'T move their phone during the 300-
+    // 500ms shutter lag. Previously the UI only showed the frozen
+    // still AFTER takePictureAsync resolved, by which point the user
+    // had already moved and the captured frame was off the receipt.
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     setCapturing(true);
     try {
-      const photo = await cameraRef.current.takePictureAsync({ quality: 0.85 });
+      const photo = await cameraRef.current.takePictureAsync({
+        quality: 1.0,
+        skipProcessing: false,
+        exif: false,
+      });
       const ext = photo.format === 'png' ? 'png' : 'jpg';
       const mime = ext === 'png' ? 'image/png' : 'image/jpeg';
       enqueueReceiptImage(photo.uri, mime, `receipt-${Date.now()}.${ext}`);
@@ -275,7 +240,10 @@ export default function ScanReceiptScreen({ navigation, route }) {
       // user sees exactly what got captured, and the UI switches to
       // "Process / Add Page / Retake" actions.
       setLastCaptureUri(photo.uri);
+      // Success haptic — tells the user "safe to lower the phone now".
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     } catch (err) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
       Alert.alert('Capture failed', err?.message ?? 'Could not take photo');
     } finally {
       setCapturing(false);
@@ -381,7 +349,13 @@ export default function ScanReceiptScreen({ navigation, route }) {
           <CornerBracket position="topRight" />
           <CornerBracket position="bottomLeft" />
           <CornerBracket position="bottomRight" />
-          {!parsedData && !frozen && <ScanLine />}
+          {!parsedData && !frozen && !capturing && <ScanLine />}
+          {capturing && (
+            <View style={styles.holdSteadyBadge} pointerEvents="none">
+              <ActivityIndicator color={colors.onSecondaryContainer} size="small" />
+              <Text style={styles.holdSteadyText}>Hold steady…</Text>
+            </View>
+          )}
           {parsedData && (
             <View style={styles.floatingBadgeMerchant}>
               <MaterialIcons name="check-circle" size={12} color={colors.onSecondaryContainer} />
@@ -391,62 +365,11 @@ export default function ScanReceiptScreen({ navigation, route }) {
         </View>
       </View>
 
-      {/* Bottom Sheet */}
+      {/* Bottom Sheet — action buttons only. Status text and queued-pages
+          preview are intentionally omitted; the reticle + haptics +
+          frozen-image preview already tell the user what state they're
+          in. Action buttons below speak for themselves. */}
       <View style={[styles.bottomSheet, { paddingBottom: insets.bottom + 24 }]}>
-        <View style={styles.statusCard}>
-          <View style={styles.statusHeader}>
-            <View>
-              <Text style={styles.statusLabel}>STATUS</Text>
-              <Text style={styles.statusTitle}>{statusText}</Text>
-            </View>
-            {/* {busy && (
-              <View style={styles.aiBadge}>
-                <PulsingDot />
-                <Text style={styles.aiBadgeText}>AI Processing</Text>
-              </View>
-            )} */}
-          </View>
-
-          {parsedData && (
-            <View style={styles.parsedSummary}>
-              <View style={styles.parsedRow}>
-                <Text style={styles.parsedLabel}>Items found</Text>
-                <Text style={styles.parsedValue}>{parsedData.items?.length ?? 0}</Text>
-              </View>
-              <View style={styles.parsedRow}>
-                <Text style={styles.parsedLabel}>Total</Text>
-                <Text style={styles.parsedValueBold}>
-                  ${parseFloat(parsedData.total ?? 0).toFixed(2)}
-                </Text>
-              </View>
-            </View>
-          )}
-
-          {!parsedData && queuedImages.length > 0 && (
-            <View style={styles.queuedSection}>
-              <View style={styles.queuedHeader}>
-                <Text style={styles.queuedTitle}>Receipt pages ({queuedImages.length})</Text>
-                <TouchableOpacity
-                  activeOpacity={0.7}
-                  onPress={() => {
-                    setQueuedImages([]);
-                  }}
-                >
-                  <Text style={styles.clearText}>Clear</Text>
-                </TouchableOpacity>
-              </View>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.queuedRow}>
-                {queuedImages.map((img, idx) => (
-                  <View key={`${img.name}-${idx}`} style={styles.pageChip}>
-                    <MaterialIcons name="description" size={16} color={colors.secondary} />
-                    <Text style={styles.pageChipText}>Page {idx + 1}</Text>
-                  </View>
-                ))}
-              </ScrollView>
-            </View>
-          )}
-        </View>
-
         {!busy && !parsedData && frozen && (
           // Frozen-image state: user has captured (or picked) at least one
           // image. Primary action is to process what they've got; secondary
@@ -679,6 +602,30 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderRadius: radii.full,
   },
+  holdSteadyBadge: {
+    position: 'absolute',
+    top: '42%',
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: 'rgba(104, 250, 221, 0.95)',
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderRadius: radii.full,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.25,
+    shadowRadius: 16,
+    elevation: 8,
+  },
+  holdSteadyText: {
+    fontFamily: 'Manrope_800ExtraBold',
+    fontSize: 15,
+    fontWeight: '800',
+    color: colors.onSecondaryContainer,
+    letterSpacing: 0.3,
+  },
   floatingBadgeText: {
     fontFamily: 'Manrope_700Bold',
     fontSize: 11,
@@ -697,123 +644,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     gap: 12,
   },
-  statusCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.95)',
-    borderRadius: radii.xl,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    ...Platform.select({
-      ios: { shadowColor: '#000', shadowOffset: { width: 0, height: 16 }, shadowOpacity: 0.12, shadowRadius: 32 },
-      android: { elevation: 8 },
-    }),
-  },
-  statusHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-  },
-  statusLabel: {
-    fontFamily: 'Inter_700Bold',
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 1.8,
-    color: colors.secondary,
-    marginBottom: 3,
-    textTransform: 'uppercase',
-  },
-  statusTitle: {
-    fontFamily: 'Manrope_800ExtraBold',
-    fontSize: 18,
-    fontWeight: '800',
-    color: colors.onSurface,
-    lineHeight: 24,
-    maxWidth: '95%',
-  },
-  aiBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-    backgroundColor: colors.secondaryContainer,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: radii.full,
-  },
-  pulsingDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: colors.secondary,
-  },
-  aiBadgeText: {
-    fontFamily: 'Inter_700Bold',
-    fontSize: 12,
-    fontWeight: '700',
-    color: colors.onSecondaryContainer,
-  },
-  parsedSummary: {
-    marginTop: 12,
-    backgroundColor: colors.surfaceContainerLow,
-    borderRadius: radii.md,
-    padding: 12,
-    gap: 8,
-  },
-  parsedRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  parsedLabel: {
-    fontFamily: 'Inter_500Medium',
-    fontSize: 13,
-    color: colors.onSurfaceVariant,
-  },
-  parsedValue: {
-    fontFamily: 'Inter_600SemiBold',
-    fontSize: 13,
-    color: colors.onSurface,
-  },
-  parsedValueBold: {
-    fontFamily: 'Manrope_700Bold',
-    fontSize: 15,
-    fontWeight: '700',
-    color: colors.secondary,
-  },
-  queuedSection: {
-    marginTop: 12,
-    gap: 8,
-  },
-  queuedHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  queuedTitle: {
-    fontFamily: 'Inter_600SemiBold',
-    fontSize: 12,
-    color: colors.onSurface,
-  },
-  clearText: {
-    fontFamily: 'Inter_600SemiBold',
-    fontSize: 12,
-    color: colors.secondary,
-  },
-  queuedRow: {
-    gap: 8,
-  },
-  pageChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: radii.full,
-    backgroundColor: colors.surfaceContainerLow,
-  },
-  pageChipText: {
-    fontFamily: 'Inter_600SemiBold',
-    fontSize: 11,
-    color: colors.onSurface,
-  },
-
   actionRow: {
     flexDirection: 'row',
     gap: 10,
