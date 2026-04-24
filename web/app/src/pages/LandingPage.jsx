@@ -52,10 +52,6 @@ export default function LandingPage() {
         <div className="lp-hero-grain" aria-hidden="true" />
         <div className="container lp-hero-inner">
           <div className="lp-hero-copy">
-            <span className="lp-eyebrow">
-              <span className="lp-pulse" aria-hidden="true" />
-              Now in TestFlight · v1.0
-            </span>
             <h1 className="lp-h1">
               Split the bill,<br />
               not the <em>friendship</em>.
