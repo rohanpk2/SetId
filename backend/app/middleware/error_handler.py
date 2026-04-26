@@ -1,8 +1,12 @@
+import logging
+
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
 from starlette.exceptions import HTTPException
+
+logger = logging.getLogger(__name__)
 
 
 def register_error_handlers(app: FastAPI) -> None:
@@ -54,6 +58,18 @@ def register_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def generic_exception_handler(request, exc: Exception):
+        # Always log the traceback. Without this, every uncaught exception
+        # silently becomes a 500/INTERNAL_ERROR with no forensic trail —
+        # which is exactly how the Supabase pooler / psycopg3 prepared-
+        # statement bug went undiagnosed during App Review (submission
+        # fe194338-…). Logging here is cheap and required for debugging.
+        client_host = request.client.host if request.client else None
+        logger.exception(
+            "unhandled_exception path=%s method=%s ip=%s",
+            request.url.path,
+            request.method,
+            client_host,
+        )
         return JSONResponse(
             status_code=500,
             content={

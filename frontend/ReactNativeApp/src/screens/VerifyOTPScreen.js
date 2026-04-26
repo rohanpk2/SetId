@@ -31,8 +31,13 @@ function mapVerifyError(code, fallback) {
     PHONE_ALREADY_REGISTERED: 'This number already has an account. Use Log In.',
     PHONE_NOT_REGISTERED: 'No account for this number yet. Use Get Started to sign up.',
     NAME_REQUIRED: 'Enter your first name on the sign-up screen.',
+    // Generic 5xx from the backend's catch-all handler. We never want to
+    // surface the raw "An unexpected error occurred" string — that's what
+    // App Review saw and rejected the submission for.
+    INTERNAL_ERROR: 'Something went wrong on our end. Please try again in a moment.',
+    VERIFICATION_FAILED: 'Verification failed. Try again.',
   };
-  return map[code] ?? fallback ?? 'Verification failed.';
+  return map[code] ?? 'Something went wrong. Please try again.';
 }
 
 export default function VerifyOTPScreen({ navigation, route }) {
