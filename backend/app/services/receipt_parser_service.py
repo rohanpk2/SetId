@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -33,6 +34,8 @@ from app.services.receipt_patterns import (
 )
 from app.services.receipt_preparser import parse_structured_rows
 from app.services.receipt_validator import validate_parsed_receipt
+
+logger = logging.getLogger(__name__)
 
 MONEY_QUANTIZE = Decimal("0.01")
 
@@ -565,6 +568,17 @@ class ReceiptParserService:
     def _run_one_image_pipeline(
         self, file_path: str, content_type: str
     ) -> tuple[CleanupReceiptPayload, list[list[str]], dict | None]:
+        path_exists = os.path.exists(file_path)
+        file_size = os.path.getsize(file_path) if path_exists else None
+        logger.info(
+            "receipt_image_pipeline_started file_path=%s content_type=%s exists=%s size_bytes=%s vision_model=%s normalize_with_llm=%s",
+            file_path,
+            content_type,
+            path_exists,
+            file_size,
+            settings.receipt_ai_vision_model,
+            settings.RECEIPT_NORMALIZE_USE_LLM,
+        )
         structured_ocr, raw_text = self._extract_structured_ocr_from_path(file_path, content_type)
         rows = (
             structured_ocr.get("rows")
@@ -587,28 +601,79 @@ class ReceiptParserService:
             cleaned,
             llm_client=self._client if settings.RECEIPT_NORMALIZE_USE_LLM else None,
         )
+        logger.info(
+            "receipt_image_pipeline_succeeded file_path=%s row_count=%s raw_text_chars=%s preparser_confidence=%s item_count=%s subtotal=%s tax=%s tip=%s total=%s",
+            file_path,
+            len(rows or []),
+            len(raw_text or ""),
+            pre.get("confidence"),
+            len(cleaned.items),
+            cleaned.subtotal,
+            cleaned.tax,
+            cleaned.tip,
+            cleaned.total,
+        )
         return cleaned, rows, structured_ocr if isinstance(structured_ocr, dict) else None
 
     def parse_receipt(self, bill_id: str) -> ParsedReceipt:
+        logger.info(
+            "receipt_parse_started bill_id=%s pipeline_version=%s",
+            bill_id,
+            RECEIPT_PIPELINE_VERSION,
+        )
         receipt = self.get_receipt(bill_id)
         if not receipt:
+            logger.warning("receipt_parse_no_receipt bill_id=%s", bill_id)
             raise ValueError(f"No receipt found for bill {bill_id}")
 
         if receipt.parsed and receipt.parsed_version == RECEIPT_PIPELINE_VERSION:
+            logger.info(
+                "receipt_parse_returning_cached_result bill_id=%s receipt_id=%s parsed_version=%s",
+                bill_id,
+                receipt.id,
+                receipt.parsed_version,
+            )
             return self._build_parsed_receipt(bill_id)
 
         if receipt.parsed and receipt.parsed_version != RECEIPT_PIPELINE_VERSION:
+            logger.info(
+                "receipt_parse_resetting_stale_version bill_id=%s receipt_id=%s old_version=%s new_version=%s",
+                bill_id,
+                receipt.id,
+                receipt.parsed_version,
+                RECEIPT_PIPELINE_VERSION,
+            )
             self._reset_parsed_data(bill_id)
             self.db.commit()
             receipt = self.get_receipt(bill_id)
             if not receipt:
+                logger.warning("receipt_parse_no_receipt_after_reset bill_id=%s", bill_id)
                 raise ValueError(f"No receipt found for bill {bill_id}")
 
         entries = self._receipt_image_entries(receipt)
+        logger.info(
+            "receipt_parse_receipt_loaded bill_id=%s receipt_id=%s parsed=%s parsed_version=%s image_count=%s receipt_file_path=%s original_filename=%s content_type=%s is_multi_image=%s",
+            bill_id,
+            receipt.id,
+            receipt.parsed,
+            receipt.parsed_version,
+            len(entries),
+            receipt.file_path,
+            receipt.original_filename,
+            receipt.content_type,
+            receipt.is_multi_image,
+        )
         merge_notes: list[str] = []
 
         if len(entries) == 1:
             ent = entries[0]
+            logger.info(
+                "receipt_parse_single_image_selected bill_id=%s receipt_id=%s file_path=%s content_type=%s",
+                bill_id,
+                receipt.id,
+                ent.get("file_path"),
+                ent.get("content_type"),
+            )
             cleaned, rows, structured_ocr = self._run_one_image_pipeline(
                 ent["file_path"], ent["content_type"]
             )
@@ -630,6 +695,14 @@ class ReceiptParserService:
         # Sequential by design: simpler error handling and deterministic merge order.
         for idx, ent in enumerate(entries):
             try:
+                logger.info(
+                    "receipt_parse_multi_image_started bill_id=%s receipt_id=%s image_index=%s file_path=%s content_type=%s",
+                    bill_id,
+                    receipt.id,
+                    idx + 1,
+                    ent.get("file_path"),
+                    ent.get("content_type"),
+                )
                 cleaned_i, rows_i, _ = self._run_one_image_pipeline(
                     ent["file_path"], ent["content_type"]
                 )
@@ -652,10 +725,33 @@ class ReceiptParserService:
                         "source_image_index": idx,
                     }
                 )
-            except Exception:
+                logger.info(
+                    "receipt_parse_multi_image_succeeded bill_id=%s receipt_id=%s image_index=%s row_count=%s item_count=%s",
+                    bill_id,
+                    receipt.id,
+                    idx + 1,
+                    len(rows_i or []),
+                    len(cleaned_i.items),
+                )
+            except Exception as exc:
+                logger.exception(
+                    "receipt_parse_multi_image_failed bill_id=%s receipt_id=%s image_index=%s file_path=%s error=%s",
+                    bill_id,
+                    receipt.id,
+                    idx + 1,
+                    ent.get("file_path"),
+                    exc,
+                )
                 merge_notes.append(f"Failed to parse image {idx + 1}")
 
         if not intermediates:
+            logger.warning(
+                "receipt_parse_no_successful_images bill_id=%s receipt_id=%s image_count=%s merge_notes=%s",
+                bill_id,
+                receipt.id,
+                len(entries),
+                merge_notes,
+            )
             raise ValueError(
                 "All receipt images failed to parse"
                 if merge_notes
@@ -667,6 +763,15 @@ class ReceiptParserService:
         merged_payload, merge_warnings_out = merge_intermediate_parses(
             intermediates,
             merge_warnings=list(merge_notes),
+        )
+        logger.info(
+            "receipt_parse_multi_image_merged bill_id=%s receipt_id=%s image_count=%s successful_image_count=%s item_count=%s warnings=%s",
+            bill_id,
+            receipt.id,
+            len(entries),
+            len(intermediates),
+            len(merged_payload.items),
+            merge_warnings_out,
         )
 
         # Persist only the merged final output; per-image parses remain in-memory only.
@@ -903,8 +1008,23 @@ class ReceiptParserService:
             raw_text = "\n".join(" ".join(row) for row in rows if row).strip()
             if not raw_text:
                 raise ValueError("Structured OCR returned empty rows")
+            logger.info(
+                "receipt_structured_ocr_succeeded file_path=%s line_count=%s row_count=%s raw_text_chars=%s model=%s",
+                file_path,
+                len(structured_payload.lines),
+                len(rows),
+                len(raw_text),
+                settings.receipt_ai_vision_model,
+            )
             return {"rows": rows}, raw_text
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "receipt_structured_ocr_failed_falling_back file_path=%s content_type=%s error=%s",
+                file_path,
+                ct,
+                exc,
+                exc_info=True,
+            )
             raw_text = self._extract_raw_text_fallback_from_path(file_path, encoded, ct)
             return None, raw_text
 
@@ -957,6 +1077,13 @@ class ReceiptParserService:
         raw_text = (response.choices[0].message.content or "").strip()
         if not raw_text:
             raise ValueError("OCR returned no text for this receipt")
+        logger.info(
+            "receipt_raw_ocr_succeeded file_path=%s content_type=%s raw_text_chars=%s model=%s",
+            file_path,
+            ct,
+            len(raw_text),
+            settings.receipt_ai_vision_model,
+        )
         return raw_text
 
     def _build_rows_from_structured_ocr(self, lines: list[OCRLine]) -> list[list[str]]:
@@ -1147,6 +1274,14 @@ class ReceiptParserService:
                 )
 
         if not parsed_items:
+            logger.warning(
+                "receipt_parse_no_purchasable_items bill_id=%s receipt_id=%s validated_item_count=%s cleaned_item_count=%s warnings=%s",
+                bill_id,
+                receipt.id,
+                len(validated["items"]),
+                len(cleaned.items),
+                warnings,
+            )
             raise ValueError("No purchasable items could be parsed from this receipt")
 
         subtotal = validated["subtotal"]
@@ -1179,6 +1314,18 @@ class ReceiptParserService:
         receipt.validation_warnings = warnings
 
         self.db.commit()
+        logger.info(
+            "receipt_parse_persisted bill_id=%s receipt_id=%s item_count=%s subtotal=%s tax=%s tip=%s total=%s confidence=%s warnings=%s",
+            bill_id,
+            receipt.id,
+            len(parsed_items),
+            subtotal,
+            tax,
+            tip,
+            total,
+            validated["overall_confidence"],
+            warnings,
+        )
         return ParsedReceipt(
             merchant_name=cleaned.merchant_name,
             subtotal=subtotal,

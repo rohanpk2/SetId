@@ -1,3 +1,4 @@
+import logging
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Header, Query, UploadFile
@@ -23,6 +24,8 @@ from app.services.receipt_parse_job_service import (
 )
 from app.services.receipt_parser_service import ReceiptParserService
 from app.workers.receipt_parse_worker import run_receipt_parse_job
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/bills/{bill_id}/receipt", tags=["Receipts"])
 
@@ -98,12 +101,37 @@ def parse_receipt(
     current_user: User = Depends(get_current_user),
 ):
     if sync:
+        logger.info(
+            "receipt_parse_sync_requested bill_id=%s user_id=%s",
+            bill_id,
+            current_user.id,
+        )
         svc = ReceiptParserService(db)
         try:
             parsed = svc.parse_receipt(str(bill_id))
         except ValueError as e:
+            logger.warning(
+                "receipt_parse_sync_failed bill_id=%s user_id=%s error=%s",
+                bill_id,
+                current_user.id,
+                e,
+            )
             return error_response("PARSE_ERROR", str(e), 400)
+        except Exception:
+            logger.exception(
+                "receipt_parse_sync_unexpected_error bill_id=%s user_id=%s",
+                bill_id,
+                current_user.id,
+            )
+            raise
 
+        logger.info(
+            "receipt_parse_sync_succeeded bill_id=%s user_id=%s item_count=%s total=%s",
+            bill_id,
+            current_user.id,
+            len(parsed.items),
+            parsed.total,
+        )
         return success_response(
             data=parsed.model_dump(mode="json", exclude_none=True),
             message="Receipt parsed successfully",
